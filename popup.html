@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SORA Downloader</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <div class="hero__badge">Personal Export Tool</div>
+        <h1>SORA Downloader</h1>
+        <p class="hint">
+          Scan your generations, then export images + prompts with structure.
+        </p>
+      </header>
+
+      <section class="card">
+        <div class="controls">
+          <button id="scanBtn">Scan Page</button>
+          <button id="downloadBtn" class="primary">Download All</button>
+        </div>
+        <div class="controls">
+          <button id="retryFailedBtn">Retry Failed Only</button>
+          <button id="clearCacheBtn">Clear Scan Cache</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Export Settings</h2>
+        <label class="option checkbox">
+          <input id="csvToggle" type="checkbox" />
+          <span>Export combined CSV</span>
+        </label>
+
+        <label class="option checkbox">
+          <input id="manifestToggle" type="checkbox" />
+          <span>Export readable run summary (TXT)</span>
+        </label>
+
+        <label class="option checkbox">
+          <input id="imageJsonToggle" type="checkbox" />
+          <span>Export per-image JSON sidecars</span>
+        </label>
+
+        <label class="option checkbox">
+          <input id="skipExistingToggle" type="checkbox" checked />
+          <span>Skip already downloaded (resume friendly)</span>
+        </label>
+
+        <label class="option checkbox">
+          <input id="organizeByGenerationToggle" type="checkbox" checked />
+          <span>Organize by generation folders</span>
+        </label>
+
+        <label class="option checkbox">
+          <input id="exportZipToggle" type="checkbox" />
+          <span>Export single ZIP file (beta)</span>
+        </label>
+
+        <label class="option checkbox">
+          <input id="preferPngToggle" type="checkbox" checked />
+          <span>Prefer PNG output (convert when possible)</span>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Scan Settings</h2>
+        <label class="option checkbox">
+          <input id="autoScrollToggle" type="checkbox" checked />
+          <span>Auto-scroll while scanning (infinite grid)</span>
+        </label>
+
+        <label class="option">
+          Download mode
+          <select id="downloadMode">
+            <option value="safe" selected>Safe (slower, lower risk)</option>
+            <option value="fast">Fast (less delay)</option>
+          </select>
+        </label>
+
+        <label class="option">
+          Max items per run
+          <input id="maxItems" type="number" min="1" step="1" value="300" />
+        </label>
+
+        <label class="option">
+          Folder prefix
+          <input id="folderPrefix" type="text" value="SORA_EXPORT" />
+        </label>
+      </section>
+
+      <section class="card results">
+        <div class="results__head">
+          <h2>Found Items</h2>
+          <span class="pill">Live</span>
+        </div>
+        <div id="status" class="status">Not scanned yet.</div>
+        <ol id="itemsList"></ol>
+      </section>
+    </main>
+
+    <div class="bg-glow bg-glow--one"></div>
+    <div class="bg-glow bg-glow--two"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

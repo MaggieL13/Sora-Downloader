@@ -1,0 +1,227 @@
+:root {
+  --bg: #130c22;
+  --bg-soft: #1b1030;
+  --card: rgba(31, 19, 56, 0.82);
+  --card-border: rgba(173, 143, 255, 0.24);
+  --text: #f5f0ff;
+  --text-dim: #c7bbeb;
+  --accent: #a175ff;
+  --accent-strong: #8d5cff;
+  --good: #36d39a;
+  --danger: #ff7c9d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  font-family: "Plus Jakarta Sans", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background: radial-gradient(120% 120% at 10% 0%, #2f1a52 0%, var(--bg) 52%, #0c0816 100%);
+  color: var(--text);
+}
+
+body {
+  min-width: 410px;
+  position: relative;
+}
+
+.app {
+  width: 410px;
+  padding: 14px;
+  position: relative;
+  z-index: 2;
+}
+
+.hero {
+  margin-bottom: 10px;
+}
+
+.hero__badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: #f3eaff;
+  border: 1px solid rgba(180, 150, 255, 0.35);
+  background: rgba(161, 117, 255, 0.16);
+  margin-bottom: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+
+.hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
+.card {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--card-border);
+  background: linear-gradient(165deg, rgba(46, 28, 82, 0.88), var(--card));
+  box-shadow: 0 10px 30px rgba(8, 4, 16, 0.36);
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #d7c7ff;
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+button {
+  border: 1px solid rgba(178, 149, 255, 0.24);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: transform 120ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(187, 160, 255, 0.55);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+button.primary {
+  background: linear-gradient(145deg, var(--accent), var(--accent-strong));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(141, 92, 255, 0.35);
+}
+
+button.primary:hover {
+  background: linear-gradient(145deg, #b185ff, #9563ff);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.option {
+  display: block;
+  font-size: 12px;
+  margin: 7px 0;
+  color: var(--text-dim);
+}
+
+.option.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.option.checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+
+.option input[type="text"],
+.option input[type="number"],
+.option select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid rgba(178, 149, 255, 0.28);
+  border-radius: 9px;
+  padding: 8px 9px;
+  background: rgba(12, 8, 24, 0.62);
+  color: var(--text);
+  outline: none;
+}
+
+.option input[type="text"]:focus,
+.option input[type="number"]:focus,
+.option select:focus {
+  border-color: rgba(180, 146, 255, 0.7);
+  box-shadow: 0 0 0 2px rgba(141, 92, 255, 0.24);
+}
+
+.results__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.pill {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(54, 211, 154, 0.15);
+  color: #8cf3ca;
+  border: 1px solid rgba(54, 211, 154, 0.3);
+}
+
+.status {
+  font-size: 12px;
+  color: #e7dcff;
+  margin-bottom: 8px;
+}
+
+#itemsList {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+#itemsList li {
+  margin-bottom: 8px;
+  line-height: 1.3;
+  color: #f0e7ff;
+}
+
+.bg-glow {
+  position: fixed;
+  pointer-events: none;
+  z-index: 1;
+  filter: blur(32px);
+  opacity: 0.44;
+}
+
+.bg-glow--one {
+  top: -40px;
+  right: -30px;
+  width: 170px;
+  height: 170px;
+  background: #9b5fff;
+}
+
+.bg-glow--two {
+  bottom: -50px;
+  left: -35px;
+  width: 190px;
+  height: 190px;
+  background: #6d56ff;
+}

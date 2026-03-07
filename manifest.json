@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "SORA Prompt + Image Downloader",
+  "description": "Scan a page for generated images and prompts, then download both image files and JSON metadata.",
+  "version": "0.1.0",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SORA Downloader"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
