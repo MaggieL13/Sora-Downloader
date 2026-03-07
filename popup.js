@@ -3,43 +3,101 @@ let lastFailedItems = [];
 const STATE_KEY = "sora_popup_state_v1";
 
 const scanBtn = document.getElementById("scanBtn");
+const pauseScanBtn = document.getElementById("pauseScanBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const retryFailedBtn = document.getElementById("retryFailedBtn");
 const clearCacheBtn = document.getElementById("clearCacheBtn");
 const statusEl = document.getElementById("status");
+const statusSpinnerEl = document.getElementById("statusSpinner");
+const statusStateEl = document.getElementById("statusState");
 const itemsList = document.getElementById("itemsList");
 const csvToggle = document.getElementById("csvToggle");
 const manifestToggle = document.getElementById("manifestToggle");
 const imageJsonToggle = document.getElementById("imageJsonToggle");
 const skipExistingToggle = document.getElementById("skipExistingToggle");
 const organizeByGenerationToggle = document.getElementById("organizeByGenerationToggle");
-const exportZipToggle = document.getElementById("exportZipToggle");
-const preferPngToggle = document.getElementById("preferPngToggle");
 const autoScrollToggle = document.getElementById("autoScrollToggle");
 const downloadModeEl = document.getElementById("downloadMode");
 const maxItemsEl = document.getElementById("maxItems");
 const folderPrefixEl = document.getElementById("folderPrefix");
+const exportSettingsBody = document.getElementById("exportSettingsBody");
+const toggleExportSectionBtn = document.getElementById("toggleExportSectionBtn");
+let activeScanInProgress = false;
+let scanPaused = false;
+let activeScanTabId = null;
+let lastSnapshotAt = 0;
+let snapshotInFlight = false;
+let uiBusy = false;
+let activeDownloadInProgress = false;
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (!message || message.type !== "SORA_SCAN_PROGRESS") {
+    // continue and allow other message types
+  } else {
+    if (!activeScanInProgress) {
+      return;
+    }
+    const progress = message.progress || {};
+    const step = Number(progress.step || 0);
+    const maxSteps = Number(progress.maxSteps || 0);
+    const found = Number(progress.found || 0);
+    const stagnantRounds = Number(progress.stagnantRounds || 0);
+    const stagnantLimit = Number(progress.stagnantLimit || 0);
+    const y = Number(progress.scrollY || 0);
+    setStatus(`Scanning... ${step}/${maxSteps} | found: ${found} | y: ${y}px | stalls: ${stagnantRounds}/${stagnantLimit}`, { state: "scan", busy: true });
+    requestScanSnapshot();
+    return;
+  }
+
+  if (message.type === "SORA_DOWNLOAD_PROGRESS" && activeDownloadInProgress) {
+    const p = message.progress || {};
+    const processed = Number(p.processed || 0);
+    const requested = Number(p.requested || 0);
+    const completed = Number(p.completed || 0);
+    const failed = Number(p.failed || 0);
+    const skipped = Number(p.skipped || 0);
+    const phase = String(p.phase || "downloading");
+    const mode = String(p.mode || "");
+    if (phase === "finalizing") {
+      setStatus(p.message ? String(p.message) : `Finalizing ${mode.toUpperCase()}... completed: ${completed}, failed: ${failed}, skipped: ${skipped}`, { state: "download", busy: true });
+    } else {
+      setStatus(`Downloading ${mode.toUpperCase()}... ${processed}/${requested} | ok: ${completed} | failed: ${failed} | skipped: ${skipped}`, { state: "download", busy: true });
+    }
+  }
+});
 
 scanBtn.addEventListener("click", onScan);
+pauseScanBtn.addEventListener("click", onTogglePauseScan);
 downloadBtn.addEventListener("click", onDownloadAll);
 retryFailedBtn.addEventListener("click", onRetryFailedOnly);
 clearCacheBtn.addEventListener("click", onClearCache);
+toggleExportSectionBtn.addEventListener("click", () => onToggleSection("export"));
 
-setStatus("Not scanned yet.");
+setStatus("Not scanned yet.", { state: "idle", busy: false });
 renderItems([]);
 setBusy(false);
 restoreState();
 
 async function onScan() {
   setBusy(true);
-  setStatus(autoScrollToggle.checked ? "Auto-scanning (scrolling)..." : "Scanning active tab...");
+  setStatus(autoScrollToggle.checked ? "Auto-scanning (scrolling)..." : "Scanning active tab...", { state: "scan", busy: true });
   try {
     const tab = await getActiveTab();
+    activeScanInProgress = true;
+    activeScanTabId = tab.id;
+    scanPaused = false;
+    refreshControlState();
+    refreshPauseButton();
     ensureTabIsScannable(tab);
+    // Always start from a fresh scan snapshot to avoid exporting stale items.
+    currentItems = [];
+    renderItems(currentItems);
+    await sendMessageWithAutoInject(tab.id, { type: "SORA_CLEAR_SCAN_CACHE" });
     const response = await sendMessageWithAutoInject(tab.id, {
       type: autoScrollToggle.checked ? "SORA_SCAN_WITH_SCROLL" : "SORA_SCAN",
       options: {
         maxSteps: 90,
+        totalMaxSteps: 5000,
         settleMs: 350
       }
     });
@@ -51,59 +109,93 @@ async function onScan() {
     currentItems = response.items || [];
     await persistState();
     renderItems(currentItems);
-    setStatus(`Found ${currentItems.length} item(s).`);
+    const totalRefs = currentItems.reduce((sum, item) => sum + Number(item?.referenceCount || 0), 0);
+    setStatus(`Found ${currentItems.length} item(s), refs: ${totalRefs}.`, { state: "done", busy: false });
   } catch (error) {
-    setStatus(`Scan failed: ${error.message}`);
+    setStatus(`Scan failed: ${error.message}`, { state: "error", busy: false });
   } finally {
+    activeScanInProgress = false;
+    activeScanTabId = null;
+    scanPaused = false;
+    refreshControlState();
+    refreshPauseButton();
     setBusy(false);
+  }
+}
+
+async function onTogglePauseScan() {
+  if (!activeScanInProgress) {
+    return;
+  }
+  try {
+    const tab = await getActiveTab();
+    ensureTabIsScannable(tab);
+    scanPaused = !scanPaused;
+    await sendMessageWithAutoInject(tab.id, {
+      type: "SORA_SET_SCAN_PAUSED",
+      paused: scanPaused
+    });
+    refreshControlState();
+    await requestScanSnapshot(true);
+    refreshPauseButton();
+    setStatus(scanPaused ? "Scan paused." : "Scan resumed.", { state: scanPaused ? "paused" : "scan", busy: !scanPaused });
+  } catch (error) {
+    scanPaused = false;
+    refreshControlState();
+    refreshPauseButton();
+    setStatus(`Pause/resume failed: ${error.message}`, { state: "error", busy: false });
   }
 }
 
 async function onDownloadAll() {
   if (!currentItems.length) {
-    setStatus("Scan first. No items to download.");
+    setStatus("Scan first. No items to download.", { state: "idle", busy: false });
     return;
   }
 
   const maxItems = getMaxItems();
   const limitedItems = currentItems.slice(0, maxItems);
   if (!limitedItems.length) {
-    setStatus("No items selected for this run.");
+    setStatus("No items selected for this run.", { state: "idle", busy: false });
     return;
   }
 
   setBusy(true);
-  setStatus(`Starting downloads (${limitedItems.length} item(s))...`);
+  activeDownloadInProgress = true;
+  setStatus(`Starting downloads (${limitedItems.length} item(s))...`, { state: "download", busy: true });
   try {
     const response = await runDownload(limitedItems, false);
     const { requested, completed, failed, skipped } = response.result;
     lastFailedItems = response.result.failedItems || [];
     await persistState();
-    setStatus(`Done. Requested: ${requested}, completed: ${completed}, failed: ${failed}, skipped: ${skipped}.`);
+    setStatus(`Done. Requested: ${requested}, completed: ${completed}, failed: ${failed}, skipped: ${skipped}.`, { state: "done", busy: false });
   } catch (error) {
-    setStatus(`Download failed: ${error.message}`);
+    setStatus(`Download failed: ${error.message}`, { state: "error", busy: false });
   } finally {
+    activeDownloadInProgress = false;
     setBusy(false);
   }
 }
 
 async function onRetryFailedOnly() {
   if (!lastFailedItems.length) {
-    setStatus("No failed items available to retry yet.");
+    setStatus("No failed items available to retry yet.", { state: "idle", busy: false });
     return;
   }
 
   setBusy(true);
-  setStatus(`Retrying ${lastFailedItems.length} failed item(s)...`);
+  activeDownloadInProgress = true;
+  setStatus(`Retrying ${lastFailedItems.length} failed item(s)...`, { state: "download", busy: true });
   try {
     const response = await runDownload(lastFailedItems, true);
     const { requested, completed, failed, skipped } = response.result;
     lastFailedItems = response.result.failedItems || [];
     await persistState();
-    setStatus(`Retry done. Requested: ${requested}, completed: ${completed}, failed: ${failed}, skipped: ${skipped}.`);
+    setStatus(`Retry done. Requested: ${requested}, completed: ${completed}, failed: ${failed}, skipped: ${skipped}.`, { state: "done", busy: false });
   } catch (error) {
-    setStatus(`Retry failed: ${error.message}`);
+    setStatus(`Retry failed: ${error.message}`, { state: "error", busy: false });
   } finally {
+    activeDownloadInProgress = false;
     setBusy(false);
   }
 }
@@ -111,6 +203,14 @@ async function onRetryFailedOnly() {
 async function onClearCache() {
   setBusy(true);
   try {
+    if (activeScanInProgress && typeof activeScanTabId === "number") {
+      try {
+        await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CANCEL_SCAN" });
+      } catch {
+        // If cancel message fails, proceed with local reset anyway.
+      }
+    }
+
     currentItems = [];
     lastFailedItems = [];
     await chrome.storage.local.remove([STATE_KEY]);
@@ -124,9 +224,9 @@ async function onClearCache() {
     }
 
     renderItems(currentItems);
-    setStatus("Scan cache cleared.");
+    setStatus("Scan cache cleared.", { state: "idle", busy: false });
   } catch (error) {
-    setStatus(`Clear failed: ${error.message}`);
+    setStatus(`Clear failed: ${error.message}`, { state: "error", busy: false });
   } finally {
     setBusy(false);
   }
@@ -141,8 +241,8 @@ async function runDownload(items, retryOnly) {
     exportImageJson: imageJsonToggle.checked,
     skipExisting: skipExistingToggle.checked,
     organizeByGeneration: organizeByGenerationToggle.checked,
-    exportZip: exportZipToggle.checked,
-    preferPng: preferPngToggle.checked,
+    exportZip: true,
+    preferPng: true,
     mode: downloadModeEl.value === "fast" ? "fast" : "safe",
     retryOnly
   };
@@ -172,21 +272,43 @@ function renderItems(items) {
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
     const li = document.createElement("li");
-    const promptPreview = truncate(item.prompt || "Prompt not detected", 130);
-    li.textContent = `${i + 1}. ${promptPreview}`;
+    const promptPreviewRaw = truncate(item.prompt || "Prompt not detected", 130);
+    const promptPreview = stripLeadingListMarker(promptPreviewRaw);
+    li.textContent = promptPreview;
     itemsList.appendChild(li);
   }
 }
 
-function setStatus(message) {
+function setStatus(message, options = {}) {
+  const state = String(options.state || "idle");
+  const busy = Boolean(options.busy);
   statusEl.textContent = message;
+  if (statusSpinnerEl) {
+    statusSpinnerEl.classList.toggle("is-active", busy);
+  }
+  if (statusStateEl) {
+    statusStateEl.textContent = mapStatusStateLabel(state);
+    statusStateEl.classList.remove("is-scan", "is-download", "is-paused", "is-done", "is-error");
+    if (state === "scan") statusStateEl.classList.add("is-scan");
+    if (state === "download") statusStateEl.classList.add("is-download");
+    if (state === "paused") statusStateEl.classList.add("is-paused");
+    if (state === "done") statusStateEl.classList.add("is-done");
+    if (state === "error") statusStateEl.classList.add("is-error");
+  }
+}
+
+function mapStatusStateLabel(state) {
+  if (state === "scan") return "Scanning";
+  if (state === "download") return "Downloading";
+  if (state === "paused") return "Paused";
+  if (state === "done") return "Done";
+  if (state === "error") return "Error";
+  return "Idle";
 }
 
 function setBusy(isBusy) {
-  scanBtn.disabled = isBusy;
-  downloadBtn.disabled = isBusy;
-  retryFailedBtn.disabled = isBusy || !lastFailedItems.length;
-  clearCacheBtn.disabled = isBusy;
+  uiBusy = isBusy;
+  refreshControlState();
 }
 
 function truncate(input, maxLen) {
@@ -194,6 +316,10 @@ function truncate(input, maxLen) {
     return input;
   }
   return `${input.slice(0, maxLen - 3)}...`;
+}
+
+function stripLeadingListMarker(input) {
+  return String(input).replace(/^\s*\d+\s*[\.\)]\s+/, "");
 }
 
 function getActiveTab() {
@@ -236,6 +362,30 @@ async function sendMessageWithAutoInject(tabId, message) {
   }
 }
 
+async function requestScanSnapshot(force = false) {
+  if (!activeScanInProgress || typeof activeScanTabId !== "number") {
+    return;
+  }
+  const now = Date.now();
+  if (!force && (snapshotInFlight || now - lastSnapshotAt < 800)) {
+    return;
+  }
+  snapshotInFlight = true;
+  try {
+    const response = await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_GET_SCAN_SNAPSHOT" });
+    if (response?.ok && Array.isArray(response.items)) {
+      currentItems = response.items;
+      renderItems(currentItems);
+      await persistState();
+    }
+  } catch {
+    // Ignore intermittent snapshot failures during long scans.
+  } finally {
+    lastSnapshotAt = Date.now();
+    snapshotInFlight = false;
+  }
+}
+
 function injectContentScript(tabId) {
   return chrome.scripting.executeScript({
     target: { tabId },
@@ -264,12 +414,11 @@ async function persistState() {
       exportImageJson: imageJsonToggle.checked,
       skipExisting: skipExistingToggle.checked,
       organizeByGeneration: organizeByGenerationToggle.checked,
-      exportZip: exportZipToggle.checked,
-      preferPng: preferPngToggle.checked,
       autoScroll: autoScrollToggle.checked,
       downloadMode: downloadModeEl.value,
       maxItems: maxItemsEl.value,
-      folderPrefix: folderPrefixEl.value
+      folderPrefix: folderPrefixEl.value,
+      collapsedExport: exportSettingsBody.classList.contains("section-collapsed")
     },
     savedAt: new Date().toISOString()
   };
@@ -291,17 +440,60 @@ async function restoreState() {
     if (typeof settings.exportImageJson === "boolean") imageJsonToggle.checked = settings.exportImageJson;
     if (typeof settings.skipExisting === "boolean") skipExistingToggle.checked = settings.skipExisting;
     if (typeof settings.organizeByGeneration === "boolean") organizeByGenerationToggle.checked = settings.organizeByGeneration;
-    if (typeof settings.exportZip === "boolean") exportZipToggle.checked = settings.exportZip;
-    if (typeof settings.preferPng === "boolean") preferPngToggle.checked = settings.preferPng;
     if (typeof settings.autoScroll === "boolean") autoScrollToggle.checked = settings.autoScroll;
     if (typeof settings.downloadMode === "string") downloadModeEl.value = settings.downloadMode;
     if (settings.maxItems != null) maxItemsEl.value = String(settings.maxItems);
     if (typeof settings.folderPrefix === "string") folderPrefixEl.value = settings.folderPrefix;
+    if (typeof settings.collapsedExport === "boolean") setSectionCollapsed("export", settings.collapsedExport);
 
     renderItems(currentItems);
-    setStatus(currentItems.length ? `Restored ${currentItems.length} scanned item(s).` : "Not scanned yet.");
+    setStatus(currentItems.length ? `Restored ${currentItems.length} scanned item(s).` : "Not scanned yet.", { state: "idle", busy: false });
     setBusy(false);
+    refreshPauseButton();
   } catch {
     // Ignore restore errors and continue with defaults.
+  }
+}
+
+function refreshPauseButton() {
+  pauseScanBtn.disabled = !activeScanInProgress;
+  pauseScanBtn.textContent = scanPaused ? "Resume Scan" : "Pause Scan";
+}
+
+function refreshControlState() {
+  const scanning = activeScanInProgress;
+  const paused = scanPaused;
+  const scanBusy = scanning && !paused;
+
+  scanBtn.disabled = uiBusy || scanning;
+  pauseScanBtn.disabled = !scanning;
+
+  // Allow clearing/reset while scan is in progress.
+  clearCacheBtn.disabled = uiBusy && !scanning;
+
+  // Keep download/retry locked while actively scrolling, but allow when paused.
+  const lockDownloads = activeDownloadInProgress || (uiBusy && !scanning) || scanBusy;
+  downloadBtn.disabled = lockDownloads;
+  retryFailedBtn.disabled = lockDownloads || !lastFailedItems.length;
+}
+
+function onToggleSection(which) {
+  const body = exportSettingsBody;
+  const collapsed = !body.classList.contains("section-collapsed");
+  setSectionCollapsed(which, collapsed);
+  persistState();
+}
+
+function setSectionCollapsed(which, collapsed) {
+  const body = exportSettingsBody;
+  const btn = toggleExportSectionBtn;
+  if (collapsed) {
+    body.classList.add("section-collapsed");
+    btn.textContent = "▸";
+    btn.setAttribute("aria-label", "Expand export settings");
+  } else {
+    body.classList.remove("section-collapsed");
+    btn.textContent = "▾";
+    btn.setAttribute("aria-label", "Collapse export settings");
   }
 }

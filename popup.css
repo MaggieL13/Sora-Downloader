@@ -81,6 +81,45 @@ h2 {
   color: #d7c7ff;
 }
 
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.section-toggle {
+  padding: 0;
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.section-collapsed {
+  display: none;
+}
+
+.subhint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
+.fieldhint {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
 .controls {
   display: flex;
   gap: 8px;
@@ -185,7 +224,80 @@ button:disabled {
 .status {
   font-size: 12px;
   color: #e7dcff;
+  margin: 0;
+}
+
+.status-wrap {
+  display: grid;
+  grid-template-columns: 14px auto 1fr;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 8px;
+}
+
+.status-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #c8b1ff;
+  opacity: 0;
+}
+
+.status-spinner.is-active {
+  opacity: 1;
+  animation: spin 0.9s linear infinite;
+}
+
+.status-state {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 7px;
+  border: 1px solid rgba(173, 143, 255, 0.36);
+  background: rgba(161, 117, 255, 0.12);
+  color: #e6d8ff;
+}
+
+.status-state.is-scan {
+  border-color: rgba(140, 199, 255, 0.45);
+  background: rgba(140, 199, 255, 0.14);
+  color: #bfe5ff;
+}
+
+.status-state.is-download {
+  border-color: rgba(255, 196, 124, 0.45);
+  background: rgba(255, 196, 124, 0.14);
+  color: #ffe3b5;
+}
+
+.status-state.is-paused {
+  border-color: rgba(255, 216, 124, 0.45);
+  background: rgba(255, 216, 124, 0.14);
+  color: #ffe9b8;
+}
+
+.status-state.is-done {
+  border-color: rgba(54, 211, 154, 0.45);
+  background: rgba(54, 211, 154, 0.14);
+  color: #aaf3d7;
+}
+
+.status-state.is-error {
+  border-color: rgba(255, 124, 157, 0.45);
+  background: rgba(255, 124, 157, 0.14);
+  color: #ffc3d3;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 #itemsList {

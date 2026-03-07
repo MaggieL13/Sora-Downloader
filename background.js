@@ -47,14 +47,16 @@ async function downloadAllAsFiles(items, options) {
   const cleanedPrefix = sanitizePathSegment(options.folderPrefix || "SORA_EXPORT");
   const profile = getModeProfile(options.mode);
   const runId = buildRunId();
-  const csvRows = [["index", "taskId", "prompt", "imageUrl", "pageUrl", "collectedAt"]];
+  const csvRows = [["index", "taskId", "presetId", "presetName", "referenceCount", "referenceMediaIds", "prompt", "imageUrl", "pageUrl", "collectedAt"]];
   const failures = [];
   const failedItems = [];
   const completedItems = [];
   const generationMap = new Map();
   let completed = 0;
   let skipped = 0;
+  let processed = 0;
   const nativeDownloadCache = new Map();
+  const detailCache = new Map();
 
   const storageKey = buildResumeStorageKey(cleanedPrefix, "files");
   const previouslyDownloaded = options.skipExisting ? await getDownloadedKeySet(storageKey) : new Set();
@@ -66,6 +68,17 @@ async function downloadAllAsFiles(items, options) {
 
     if (options.skipExisting && identityKey && previouslyDownloaded.has(identityKey)) {
       skipped += 1;
+      processed += 1;
+      emitDownloadProgress({
+        phase: "downloading",
+        mode: "files",
+        processed,
+        requested: items.length,
+        completed,
+        failed: failures.length,
+        skipped,
+        currentIndex: index
+      });
       continue;
     }
 
@@ -82,6 +95,8 @@ async function downloadAllAsFiles(items, options) {
       : stem;
     const baseFolder = options.organizeByGeneration ? `${cleanedPrefix}/${group.folder}` : cleanedPrefix;
     const jsonFilename = `${baseFolder}/${imageBaseName}.json`;
+
+    await enrichItemReferences(item, detailCache);
 
     try {
       const fetched = await fetchFromCandidates(candidateUrls, profile.attemptDelayMs);
@@ -107,6 +122,17 @@ async function downloadAllAsFiles(items, options) {
       failures.push({ index, imageUrl: primaryUrl, error: String(error) });
       failedItems.push(item);
     }
+    processed += 1;
+    emitDownloadProgress({
+      phase: "downloading",
+      mode: "files",
+      processed,
+      requested: items.length,
+      completed,
+      failed: failures.length,
+      skipped,
+      currentIndex: index
+    });
 
     await sleep(profile.itemDelayMs);
   }
@@ -121,7 +147,16 @@ async function downloadAllAsFiles(items, options) {
   }
 
   if (options.organizeByGeneration) {
-    await writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId);
+    emitDownloadProgress({
+      phase: "finalizing",
+      mode: "files",
+      processed,
+      requested: items.length,
+      completed,
+      failed: failures.length,
+      skipped
+    });
+    await writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache);
   }
 
   const manifest = buildManifest(runId, options, cleanedPrefix, items.length, completed, failures, skipped, completedItems);
@@ -146,14 +181,16 @@ async function downloadAllAsZip(items, options) {
   const profile = getModeProfile(options.mode);
   const runId = buildRunId();
   const zip = new SimpleZipWriter();
-  const csvRows = [["index", "taskId", "prompt", "imageUrl", "pageUrl", "collectedAt"]];
+  const csvRows = [["index", "taskId", "presetId", "presetName", "referenceCount", "referenceMediaIds", "prompt", "imageUrl", "pageUrl", "collectedAt"]];
   const failures = [];
   const failedItems = [];
   const completedItems = [];
   const generationMap = new Map();
   let completed = 0;
   let skipped = 0;
+  let processed = 0;
   const nativeDownloadCache = new Map();
+  const detailCache = new Map();
 
   const storageKey = buildResumeStorageKey(cleanedPrefix, "zip");
   const previouslyDownloaded = options.skipExisting ? await getDownloadedKeySet(storageKey) : new Set();
@@ -165,6 +202,17 @@ async function downloadAllAsZip(items, options) {
 
     if (options.skipExisting && identityKey && previouslyDownloaded.has(identityKey)) {
       skipped += 1;
+      processed += 1;
+      emitDownloadProgress({
+        phase: "downloading",
+        mode: "zip",
+        processed,
+        requested: items.length,
+        completed,
+        failed: failures.length,
+        skipped,
+        currentIndex: index
+      });
       continue;
     }
 
@@ -181,6 +229,8 @@ async function downloadAllAsZip(items, options) {
       : stem;
     const baseFolder = options.organizeByGeneration ? `${cleanedPrefix}/${group.folder}` : cleanedPrefix;
     const jsonPath = `${baseFolder}/${imageBaseName}.json`;
+
+    await enrichItemReferences(item, detailCache);
 
     try {
       const fetched = await fetchFromCandidates(candidateUrls, profile.attemptDelayMs);
@@ -206,6 +256,17 @@ async function downloadAllAsZip(items, options) {
       failures.push({ index, imageUrl: primaryUrl, error: String(error) });
       failedItems.push(item);
     }
+    processed += 1;
+    emitDownloadProgress({
+      phase: "downloading",
+      mode: "zip",
+      processed,
+      requested: items.length,
+      completed,
+      failed: failures.length,
+      skipped,
+      currentIndex: index
+    });
 
     await sleep(profile.itemDelayMs);
   }
@@ -219,7 +280,16 @@ async function downloadAllAsZip(items, options) {
   }
 
   if (options.organizeByGeneration) {
-    writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId);
+    emitDownloadProgress({
+      phase: "finalizing",
+      mode: "zip",
+      processed,
+      requested: items.length,
+      completed,
+      failed: failures.length,
+      skipped
+    });
+    await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache);
   }
 
   const manifest = buildManifest(runId, options, cleanedPrefix, items.length, completed, failures, skipped, completedItems);
@@ -227,7 +297,37 @@ async function downloadAllAsZip(items, options) {
     zip.addTextFile(`${cleanedPrefix}/summary_${runId}.txt`, buildRunSummaryText(manifest));
   }
 
+  if (zip.entries.length === 0) {
+    // Avoid producing an opaque "empty ZIP" when everything was skipped
+    // (or optional exports were turned off). Provide a readable explanation.
+    zip.addTextFile(
+      `${cleanedPrefix}/README.txt`,
+      [
+        "No files were added to this export.",
+        "",
+        `Requested: ${items.length}`,
+        `Completed: ${completed}`,
+        `Failed: ${failures.length}`,
+        `Skipped: ${skipped}`,
+        "",
+        options.skipExisting
+          ? "Tip: 'Skip already downloaded' is enabled. Disable it to force re-export."
+          : "Tip: Re-run scan and try download again."
+      ].join("\n")
+    );
+  }
+
   const zipBytes = zip.finalize();
+  emitDownloadProgress({
+    phase: "finalizing",
+    mode: "zip",
+    processed,
+    requested: items.length,
+    completed,
+    failed: failures.length,
+    skipped,
+    message: "Writing ZIP file..."
+  });
   await downloadBlob(
     new Blob([zipBytes], { type: "application/zip" }),
     `${cleanedPrefix}/${cleanedPrefix}_${runId}.zip`
@@ -256,6 +356,13 @@ function buildMetadata(item, index, runId, selectedUrl, candidateUrls) {
     detailUrl: item.detailUrl || "",
     taskUrl: item.taskUrl || "",
     taskId: item.taskId || "",
+    presetName: item.presetName || "",
+    presetId: item.presetId || "",
+    presetUrl: item.presetUrl || "",
+    presetDescription: item.presetDescription || "",
+    referenceImages: Array.isArray(item.referenceImages) ? item.referenceImages : [],
+    referenceMediaIds: Array.isArray(item.referenceMediaIds) ? item.referenceMediaIds : [],
+    referenceCount: Number(item.referenceCount || 0),
     pageUrl: item.pageUrl || "",
     pageTitle: item.pageTitle || "",
     collectedAt: item.collectedAt || new Date().toISOString(),
@@ -312,6 +419,159 @@ function extractGenerationId(item) {
   return "";
 }
 
+async function enrichItemReferences(item, detailCache) {
+  if (Array.isArray(item.referenceImages) && item.referenceImages.length > 0) {
+    return;
+  }
+
+  const token = await getAccessToken(detailCache);
+  if (!token) return;
+
+  const genId = extractGenerationId(item);
+  if (!genId) return;
+
+  const genData = await fetchApiJson(
+    `https://sora.chatgpt.com/backend/generations/${genId}`,
+    detailCache,
+    `gen:${genId}`,
+    token
+  );
+  if (!genData) return;
+
+  // Enrich preset info from API if missing
+  if (!item.presetName && !item.presetId) {
+    enrichPresetFromInpaintItems(item, genData.inpaint_items);
+  }
+
+  const refs = await resolveInpaintItems(genData.inpaint_items, detailCache, token);
+  if (refs.length) {
+    applyRefsToItem(item, refs);
+  }
+}
+
+function applyRefsToItem(item, refs) {
+  item.referenceImages = refs;
+  item.referenceMediaIds = refs.map((r) => r.mediaId).filter(Boolean);
+  item.referenceCount = refs.length;
+}
+
+async function getAccessToken(cache) {
+  if (cache.has("_accessToken")) return cache.get("_accessToken");
+  try {
+    const response = await fetch("https://sora.chatgpt.com/api/auth/session", {
+      credentials: "include"
+    });
+    if (!response.ok) {
+      cache.set("_accessToken", "");
+      return "";
+    }
+    const data = await response.json();
+    const token = data?.accessToken || "";
+    cache.set("_accessToken", token);
+    return token;
+  } catch {
+    cache.set("_accessToken", "");
+    return "";
+  }
+}
+
+async function fetchApiJson(url, cache, cacheKey, token) {
+  if (cache.has(cacheKey)) return cache.get(cacheKey);
+  try {
+    const headers = { Accept: "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const response = await fetch(url, { method: "GET", headers });
+    if (!response.ok) {
+      cache.set(cacheKey, null);
+      return null;
+    }
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    if (!contentType.includes("application/json")) {
+      cache.set(cacheKey, null);
+      return null;
+    }
+    const data = await response.json();
+    cache.set(cacheKey, data);
+    return data;
+  } catch {
+    cache.set(cacheKey, null);
+    return null;
+  }
+}
+
+async function resolveInpaintItems(inpaintItems, cache, token) {
+  if (!Array.isArray(inpaintItems) || !inpaintItems.length) return [];
+
+  const refs = [];
+  for (const entry of inpaintItems) {
+    if (!entry || typeof entry !== "object") continue;
+
+    const mediaId = entry.upload_media_id || "";
+    const genId = entry.generation_id || "";
+
+    // Skip entries with no image reference
+    if (!mediaId && !genId) continue;
+
+    let mediaUrl = entry.servable_url || "";
+    let thumbUrl = "";
+
+    // For generation references, fetch that generation to get its image URL
+    if (genId && !mediaUrl) {
+      const refGenData = await fetchApiJson(
+        `https://sora.chatgpt.com/backend/generations/${genId}`,
+        cache,
+        `gen:${genId}`,
+        token
+      );
+      if (refGenData) {
+        mediaUrl = refGenData.url || refGenData.encodings?.source?.path || "";
+        thumbUrl = refGenData.encodings?.thumbnail?.path || "";
+      }
+    }
+
+    // For uploaded media, try known serving endpoints
+    if (mediaId && !mediaUrl) {
+      const mediaEndpoints = [
+        { url: `https://sora.chatgpt.com/backend/uploads/${mediaId}`, key: `uploads:${mediaId}` },
+        { url: `https://sora.chatgpt.com/backend/media/${mediaId}`, key: `media:${mediaId}` },
+        { url: `https://sora.chatgpt.com/backend/files/${mediaId}`, key: `files:${mediaId}` }
+      ];
+      for (const ep of mediaEndpoints) {
+        const data = await fetchApiJson(ep.url, cache, ep.key, token);
+        if (data) {
+          mediaUrl = data.url || data.servable_url || data.download_url || "";
+          if (!mediaUrl) {
+            const urls = collectUrlsFromJson(data);
+            mediaUrl = urls[0] || "";
+          }
+          if (mediaUrl) break;
+        }
+      }
+    }
+
+    refs.push({
+      mediaId,
+      genId,
+      mediaUrl,
+      thumbUrl,
+      alt: entry.description || ""
+    });
+  }
+
+  return refs;
+}
+
+function enrichPresetFromInpaintItems(item, inpaintItems) {
+  if (!Array.isArray(inpaintItems)) return;
+  for (const entry of inpaintItems) {
+    if (entry?.preset_id) {
+      item.presetId = item.presetId || entry.preset_id;
+      item.presetName = item.presetName || entry.reference_display_name || "";
+      break;
+    }
+  }
+}
+
 function collectUrlsFromJson(input) {
   const urls = [];
   const stack = [input];
@@ -355,6 +615,10 @@ function buildCsvRow(index, metadata) {
   return [
     String(index),
     csvEscape(metadata.taskId),
+    csvEscape(metadata.presetId),
+    csvEscape(metadata.presetName),
+    csvEscape(metadata.referenceCount),
+    csvEscape((metadata.referenceMediaIds || []).join("|")),
     csvEscape(metadata.prompt),
     csvEscape(metadata.imageUrl),
     csvEscape(metadata.pageUrl),
@@ -373,13 +637,54 @@ function appendToGroupState(groupState, imageBaseName, ext, metadata) {
   if (!groupState.prompt && metadata.prompt) {
     groupState.prompt = metadata.prompt;
   }
+  if (!groupState.presetName && metadata.presetName) {
+    groupState.presetName = metadata.presetName;
+  }
+  if (!groupState.presetId && metadata.presetId) {
+    groupState.presetId = metadata.presetId;
+  }
+  if (!groupState.presetUrl && metadata.presetUrl) {
+    groupState.presetUrl = metadata.presetUrl;
+  }
+  if (!groupState.presetDescription && metadata.presetDescription) {
+    groupState.presetDescription = metadata.presetDescription;
+  }
+  if (Array.isArray(metadata.referenceImages)) {
+    for (const ref of metadata.referenceImages) {
+      const mediaId = String(ref.mediaId || "");
+      const genId = String(ref.genId || "");
+      const key = mediaId || genId || String(ref.thumbUrl || ref.mediaUrl || "");
+      if (!key) continue;
+      if (groupState.referencesByKey.has(key)) continue;
+      groupState.referencesByKey.set(key, {
+        mediaId,
+        genId,
+        mediaUrl: String(ref.mediaUrl || ""),
+        thumbUrl: String(ref.thumbUrl || ""),
+        alt: String(ref.alt || "")
+      });
+    }
+  }
 }
 
-async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId) {
+async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache) {
   for (const groupState of generationMap.values()) {
     if (groupState.prompt) {
       await downloadTextFile(`${groupState.prompt}\n`, `${cleanedPrefix}/${groupState.folder}/prompt.txt`, "text/plain");
     }
+    if (groupState.presetName || groupState.presetId || groupState.presetDescription || groupState.presetUrl) {
+      await downloadTextFile(
+        buildPresetText(groupState),
+        `${cleanedPrefix}/${groupState.folder}/preset.txt`,
+        "text/plain"
+      );
+    }
+    await exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDownloadCache);
+    await downloadTextFile(
+      buildReferencesText(groupState),
+      `${cleanedPrefix}/${groupState.folder}/references.txt`,
+      "text/plain"
+    );
 
     const generationMeta = {
       runId,
@@ -389,6 +694,11 @@ async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, run
       title: groupState.title,
       taskId: groupState.taskId,
       taskUrl: groupState.taskUrl,
+      presetName: groupState.presetName || "",
+      presetId: groupState.presetId || "",
+      presetUrl: groupState.presetUrl || "",
+      presetDescription: groupState.presetDescription || "",
+      references: Array.from(groupState.referencesByKey.values()),
       prompt: groupState.prompt,
       images: groupState.images
     };
@@ -400,11 +710,16 @@ async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, run
   }
 }
 
-function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId) {
+async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache) {
   for (const groupState of generationMap.values()) {
     if (groupState.prompt) {
       zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/prompt.txt`, `${groupState.prompt}\n`);
     }
+    if (groupState.presetName || groupState.presetId || groupState.presetDescription || groupState.presetUrl) {
+      zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/preset.txt`, buildPresetText(groupState));
+    }
+    await exportReferenceImagesToZip(zip, cleanedPrefix, groupState, nativeDownloadCache);
+    zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/references.txt`, buildReferencesText(groupState));
 
     const generationMeta = {
       runId,
@@ -414,6 +729,11 @@ function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId)
       title: groupState.title,
       taskId: groupState.taskId,
       taskUrl: groupState.taskUrl,
+      presetName: groupState.presetName || "",
+      presetId: groupState.presetId || "",
+      presetUrl: groupState.presetUrl || "",
+      presetDescription: groupState.presetDescription || "",
+      references: Array.from(groupState.referencesByKey.values()),
       prompt: groupState.prompt,
       images: groupState.images
     };
@@ -675,11 +995,124 @@ function getOrCreateGroupState(map, group) {
     title: group.title,
     taskId: group.taskId,
     taskUrl: group.taskUrl,
+    presetName: "",
+    presetId: "",
+    presetUrl: "",
+    presetDescription: "",
+    referencesByKey: new Map(),
     prompt: "",
     images: []
   };
   map.set(group.groupKey, state);
   return state;
+}
+
+async function exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDownloadCache) {
+  const refs = Array.from(groupState.referencesByKey.values());
+  for (let i = 0; i < refs.length; i += 1) {
+    const ref = refs[i];
+    const sourceUrls = await getReferenceSourceCandidates(ref, nativeDownloadCache);
+    if (!sourceUrls.length) continue;
+    let exported = false;
+    for (const sourceUrl of sourceUrls) {
+      try {
+        const bytes = await fetchBinaryBytes(sourceUrl, 15000);
+        const ext = guessExtension(sourceUrl);
+        const mime = extensionToMime(ext) || "application/octet-stream";
+        const filename = `${cleanedPrefix}/${groupState.folder}/references/reference_${String(i + 1).padStart(2, "0")}${ext}`;
+        await downloadBlob(new Blob([bytes], { type: mime }), filename);
+        exported = true;
+        break;
+      } catch {
+        // Try the next candidate URL.
+      }
+    }
+    if (!exported) {
+      console.warn("[Sora Downloader] Failed to export reference image", ref);
+    }
+  }
+}
+
+async function exportReferenceImagesToZip(zip, cleanedPrefix, groupState, nativeDownloadCache) {
+  const refs = Array.from(groupState.referencesByKey.values());
+  for (let i = 0; i < refs.length; i += 1) {
+    const ref = refs[i];
+    const sourceUrls = await getReferenceSourceCandidates(ref, nativeDownloadCache);
+    if (!sourceUrls.length) continue;
+    let exported = false;
+    for (const sourceUrl of sourceUrls) {
+      try {
+        const bytes = await fetchBinaryBytes(sourceUrl, 15000);
+        const ext = guessExtension(sourceUrl);
+        const filename = `${cleanedPrefix}/${groupState.folder}/references/reference_${String(i + 1).padStart(2, "0")}${ext}`;
+        zip.addFile(filename, bytes);
+        exported = true;
+        break;
+      } catch {
+        // Try the next candidate URL.
+      }
+    }
+    if (!exported) {
+      console.warn("[Sora Downloader] Failed to export reference image to ZIP", ref);
+    }
+  }
+}
+
+async function getReferenceSourceCandidates(ref, nativeDownloadCache) {
+  const candidates = [];
+  const mediaUrl = String(ref?.mediaUrl || "");
+  const thumbUrl = String(ref?.thumbUrl || "");
+  const genId = String(ref?.genId || "");
+
+  if (mediaUrl) candidates.push(mediaUrl);
+  if (thumbUrl) candidates.push(thumbUrl);
+  if (genId) {
+    const nativeUrl = await getNativeDownloadUrl({ detailUrl: `https://sora.chatgpt.com/g/${genId}` }, nativeDownloadCache || new Map());
+    if (nativeUrl) candidates.unshift(nativeUrl);
+  }
+
+  const deThumbed = candidates
+    .map((url) => String(url || "").replace(/_thumb(?=\.[a-z0-9]+(?:[?#]|$))/i, ""))
+    .filter(Boolean);
+  return Array.from(new Set([...deThumbed, ...candidates].filter(Boolean)));
+}
+
+function buildReferencesText(groupState) {
+  const refs = Array.from(groupState.referencesByKey.values());
+  const lines = [];
+  lines.push("References");
+  lines.push("==========");
+  if (!refs.length) {
+    lines.push("None captured.");
+    return `${lines.join("\n")}\n`;
+  }
+  for (let i = 0; i < refs.length; i += 1) {
+    const r = refs[i];
+    lines.push(`${i + 1}. ${r.mediaId || r.genId || "(no media/gen id)"}`);
+    if (r.genId) lines.push(`   genId: ${r.genId}`);
+    if (r.mediaUrl) lines.push(`   mediaUrl: ${r.mediaUrl}`);
+    if (r.thumbUrl) lines.push(`   thumbUrl: ${r.thumbUrl}`);
+    if (r.alt) lines.push(`   alt: ${r.alt}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function buildPresetText(groupState) {
+  const lines = [];
+  lines.push("Preset");
+  lines.push("======");
+  if (groupState.presetName) lines.push(`Name: ${groupState.presetName}`);
+  if (groupState.presetId) lines.push(`ID: ${groupState.presetId}`);
+  if (groupState.presetUrl) lines.push(`URL: ${groupState.presetUrl}`);
+  lines.push("");
+  if (groupState.presetDescription) {
+    lines.push("Description");
+    lines.push("-----------");
+    lines.push(groupState.presetDescription);
+  } else {
+    lines.push("Description: (not captured)");
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function extractGenId(detailUrl) {
@@ -719,7 +1152,19 @@ function extensionToMime(ext) {
 
 function csvEscape(value) {
   const input = String(value ?? "");
-  return `"${input.replace(/"/g, "\"\"")}"`;
+  // RFC 4180: embedded quotes must be doubled (" -> "").
+  return `"${input.replace(/"/g, '""')}"`;
+}
+
+function emitDownloadProgress(progress) {
+  try {
+    chrome.runtime.sendMessage({ type: "SORA_DOWNLOAD_PROGRESS", progress }, () => {
+      // Ignore delivery errors (popup may be closed).
+      void chrome.runtime.lastError;
+    });
+  } catch {
+    // Best-effort only.
+  }
 }
 
 function sleep(ms) {
@@ -784,6 +1229,9 @@ class SimpleZipWriter {
   }
 
   finalize() {
+    // Known limitation: this writer stores entries without DEFLATE compression
+    // (ZIP method 0). This keeps implementation simple and reliable.
+    // PNG/WEBP assets are already compressed; text files could be optimized later.
     const localParts = [];
     const centralParts = [];
     let offset = 0;

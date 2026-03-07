@@ -19,76 +19,73 @@
       <section class="card">
         <div class="controls">
           <button id="scanBtn">Scan Page</button>
-          <button id="downloadBtn" class="primary">Download All</button>
-        </div>
-        <div class="controls">
+          <button id="pauseScanBtn">Pause Scan</button>
           <button id="retryFailedBtn">Retry Failed Only</button>
+        </div>
+        <label class="option checkbox">
+          <input id="autoScrollToggle" type="checkbox" checked />
+          <span>Auto-scroll while scanning (infinite grid)</span>
+        </label>
+        <div class="controls">
           <button id="clearCacheBtn">Clear Scan Cache</button>
+          <button id="downloadBtn" class="primary">Download All</button>
         </div>
       </section>
 
       <section class="card">
-        <h2>Export Settings</h2>
-        <label class="option checkbox">
-          <input id="csvToggle" type="checkbox" />
-          <span>Export combined CSV</span>
-        </label>
+        <div class="section-head">
+          <h2>Export Settings</h2>
+          <button id="toggleExportSectionBtn" class="section-toggle" type="button" data-target="exportSettingsBody" aria-label="Collapse export settings">▾</button>
+        </div>
+        <div id="exportSettingsBody">
+          <label class="option checkbox">
+            <input id="csvToggle" type="checkbox" />
+            <span>Export combined CSV</span>
+          </label>
 
-        <label class="option checkbox">
-          <input id="manifestToggle" type="checkbox" />
-          <span>Export readable run summary (TXT)</span>
-        </label>
+          <label class="option checkbox">
+            <input id="manifestToggle" type="checkbox" />
+            <span>Export readable run summary (TXT)</span>
+          </label>
 
-        <label class="option checkbox">
-          <input id="imageJsonToggle" type="checkbox" />
-          <span>Export per-image JSON sidecars</span>
-        </label>
+          <label class="option checkbox">
+            <input id="imageJsonToggle" type="checkbox" />
+            <span>Export per-image JSON sidecars</span>
+          </label>
 
-        <label class="option checkbox">
-          <input id="skipExistingToggle" type="checkbox" checked />
-          <span>Skip already downloaded (resume friendly)</span>
-        </label>
+          <label class="option checkbox">
+            <input id="skipExistingToggle" type="checkbox" checked />
+            <span>Skip already downloaded (resume friendly)</span>
+          </label>
 
         <label class="option checkbox">
           <input id="organizeByGenerationToggle" type="checkbox" checked />
           <span>Organize by generation folders</span>
         </label>
 
-        <label class="option checkbox">
-          <input id="exportZipToggle" type="checkbox" />
-          <span>Export single ZIP file (beta)</span>
-        </label>
+        <p class="subhint">Export format is always ZIP (one archive per run).</p>
+        <p class="subhint">Image output prefers native PNG; WebP/JPEG converts to PNG as fallback.</p>
 
-        <label class="option checkbox">
-          <input id="preferPngToggle" type="checkbox" checked />
-          <span>Prefer PNG output (convert when possible)</span>
-        </label>
-      </section>
+          <label class="option">
+            Download mode
+            <select id="downloadMode">
+              <option value="safe" selected>Safe (slower, lower risk)</option>
+              <option value="fast">Fast (less delay)</option>
+            </select>
+            <span class="fieldhint">`Safe` adds more delay to reduce request spikes. `Fast` is quicker but more aggressive.</span>
+          </label>
 
-      <section class="card">
-        <h2>Scan Settings</h2>
-        <label class="option checkbox">
-          <input id="autoScrollToggle" type="checkbox" checked />
-          <span>Auto-scroll while scanning (infinite grid)</span>
-        </label>
+          <label class="option">
+            Max items per run
+            <input id="maxItems" type="number" min="1" step="1" value="300" />
+            <span class="fieldhint">Caps how many scanned items run in one export. Example: 2,000 found + 300 max = about 7 runs.</span>
+          </label>
 
-        <label class="option">
-          Download mode
-          <select id="downloadMode">
-            <option value="safe" selected>Safe (slower, lower risk)</option>
-            <option value="fast">Fast (less delay)</option>
-          </select>
-        </label>
-
-        <label class="option">
-          Max items per run
-          <input id="maxItems" type="number" min="1" step="1" value="300" />
-        </label>
-
-        <label class="option">
-          Folder prefix
-          <input id="folderPrefix" type="text" value="SORA_EXPORT" />
-        </label>
+          <label class="option">
+            Folder prefix
+            <input id="folderPrefix" type="text" value="SORA_EXPORT" />
+          </label>
+        </div>
       </section>
 
       <section class="card results">
@@ -96,7 +93,11 @@
           <h2>Found Items</h2>
           <span class="pill">Live</span>
         </div>
-        <div id="status" class="status">Not scanned yet.</div>
+        <div class="status-wrap">
+          <span id="statusSpinner" class="status-spinner" aria-hidden="true"></span>
+          <span id="statusState" class="status-state">Idle</span>
+          <div id="status" class="status">Not scanned yet.</div>
+        </div>
         <ol id="itemsList"></ol>
       </section>
     </main>
