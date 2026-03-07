@@ -151,9 +151,10 @@
     scanCanceled = false;
     const maxSteps = clampNumber(options.maxSteps, 1, 500, 90);
     const totalMaxSteps = clampNumber(options.totalMaxSteps, maxSteps, 10000, 5000);
-    const settleMs = clampNumber(options.settleMs, 100, 3000, 350);
+    const baseSettleMs = clampNumber(options.settleMs, 100, 3000, 350);
     const stagnantLimit = 12;
     let stagnantRounds = 0;
+    let currentSettleMs = baseSettleMs;
     let prevScrollY = -1;
     let totalSteps = 0;
 
@@ -182,7 +183,10 @@
         break;
       }
       await waitWhilePaused();
-      await sleep(settleMs);
+
+      // Wait for the DOM to settle: base timer + wait for lazy images + MutationObserver
+      await sleep(currentSettleMs);
+      await waitForDomSettle();
 
       const afterStepItems = scanGenerationItems();
       for (const item of afterStepItems) {
@@ -202,8 +206,12 @@
 
       if (noGrowth && (noMovement || nearBottom)) {
         stagnantRounds += 1;
+        // Adaptive settle: double the wait time each stagnant round (cap at 3000ms)
+        currentSettleMs = Math.min(currentSettleMs * 2, 3000);
       } else {
         stagnantRounds = 0;
+        // Reset settle time when new items appear
+        currentSettleMs = baseSettleMs;
       }
 
       // Keep global snapshot fresh so popup can live-refresh found items.
@@ -224,6 +232,77 @@
     }
 
     return Array.from(byKey.values());
+  }
+
+  /**
+   * Wait for the visible DOM to settle:
+   * 1. Wait for all in-viewport images to have naturalWidth > 0 (loaded)
+   * 2. Use a MutationObserver to catch late-arriving img elements
+   * Gives up after maxWaitMs to avoid blocking forever.
+   */
+  function waitForDomSettle(maxWaitMs = 4000) {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + maxWaitMs;
+      let observer = null;
+      let resolved = false;
+
+      function done() {
+        if (resolved) return;
+        resolved = true;
+        if (observer) observer.disconnect();
+        resolve();
+      }
+
+      function allViewportImagesLoaded() {
+        const viewportBottom = window.scrollY + window.innerHeight;
+        const viewportTop = window.scrollY;
+        const imgs = document.querySelectorAll("img");
+        for (const img of imgs) {
+          const rect = img.getBoundingClientRect();
+          const absTop = rect.top + window.scrollY;
+          const absBottom = rect.bottom + window.scrollY;
+          // Only check images in or near the viewport
+          if (absBottom < viewportTop - 200 || absTop > viewportBottom + 200) continue;
+          // Skip tiny placeholders and data URIs
+          if (rect.width < 10 || rect.height < 10) continue;
+          const src = img.currentSrc || img.src || "";
+          if (!src || src.startsWith("data:")) continue;
+          // Image not yet loaded
+          if (!img.complete || img.naturalWidth === 0) return false;
+        }
+        return true;
+      }
+
+      // Poll for image loading + watch for new img elements via MutationObserver
+      observer = new MutationObserver(() => {
+        // New nodes arrived — give images a moment to start loading, then re-check
+        setTimeout(() => {
+          if (Date.now() >= deadline) { done(); return; }
+          if (allViewportImagesLoaded()) done();
+        }, 120);
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      // Also poll periodically in case images load without DOM mutations
+      const pollInterval = setInterval(() => {
+        if (Date.now() >= deadline || resolved) {
+          clearInterval(pollInterval);
+          done();
+          return;
+        }
+        if (allViewportImagesLoaded()) {
+          clearInterval(pollInterval);
+          done();
+        }
+      }, 150);
+
+      // Immediate check
+      if (allViewportImagesLoaded()) {
+        clearInterval(pollInterval);
+        done();
+      }
+    });
   }
 
   function mergeIntoAccumulator(items) {

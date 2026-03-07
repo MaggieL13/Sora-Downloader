@@ -30,13 +30,11 @@ let snapshotInFlight = false;
 let uiBusy = false;
 let activeDownloadInProgress = false;
 
+// ── Scan progress from content script (arrives via chrome.runtime messaging) ──
 chrome.runtime.onMessage.addListener((message) => {
-  if (!message || message.type !== "SORA_SCAN_PROGRESS") {
-    // continue and allow other message types
-  } else {
-    if (!activeScanInProgress) {
-      return;
-    }
+  if (!message) return;
+  if (message.type === "SORA_SCAN_PROGRESS") {
+    if (!activeScanInProgress) return;
     const progress = message.progress || {};
     const step = Number(progress.step || 0);
     const maxSteps = Number(progress.maxSteps || 0);
@@ -46,23 +44,20 @@ chrome.runtime.onMessage.addListener((message) => {
     const y = Number(progress.scrollY || 0);
     setStatus(`Scanning... ${step}/${maxSteps} | found: ${found} | y: ${y}px | stalls: ${stagnantRounds}/${stagnantLimit}`, { state: "scan", busy: true });
     requestScanSnapshot();
-    return;
   }
+});
 
-  if (message.type === "SORA_DOWNLOAD_PROGRESS" && activeDownloadInProgress) {
-    const p = message.progress || {};
-    const processed = Number(p.processed || 0);
-    const requested = Number(p.requested || 0);
-    const completed = Number(p.completed || 0);
-    const failed = Number(p.failed || 0);
-    const skipped = Number(p.skipped || 0);
-    const phase = String(p.phase || "downloading");
-    const mode = String(p.mode || "");
-    if (phase === "finalizing") {
-      setStatus(p.message ? String(p.message) : `Finalizing ${mode.toUpperCase()}... completed: ${completed}, failed: ${failed}, skipped: ${skipped}`, { state: "download", busy: true });
-    } else {
-      setStatus(`Downloading ${mode.toUpperCase()}... ${processed}/${requested} | ok: ${completed} | failed: ${failed} | skipped: ${skipped}`, { state: "download", busy: true });
-    }
+// ── Download/enrichment progress from downloader.js (same window, custom event) ──
+window.addEventListener("sora-download-progress", (e) => {
+  const p = e.detail || {};
+  const phase = String(p.phase || "downloading");
+  const mode = String(p.mode || "");
+  if (phase === "enriching") {
+    setStatus(p.message ? String(p.message) : `Fetching references... ${p.processed}/${p.requested}`, { state: "download", busy: true });
+  } else if (phase === "finalizing") {
+    setStatus(p.message ? String(p.message) : `Finalizing ${mode.toUpperCase()}... completed: ${p.completed}, failed: ${p.failed}, skipped: ${p.skipped}`, { state: "download", busy: true });
+  } else {
+    setStatus(`Downloading ${mode.toUpperCase()}... ${p.processed}/${p.requested} | ok: ${p.completed} | failed: ${p.failed} | skipped: ${p.skipped}`, { state: "download", busy: true });
   }
 });
 
@@ -89,7 +84,6 @@ async function onScan() {
     refreshControlState();
     refreshPauseButton();
     ensureTabIsScannable(tab);
-    // Always start from a fresh scan snapshot to avoid exporting stale items.
     currentItems = [];
     renderItems(currentItems);
     await sendMessageWithAutoInject(tab.id, { type: "SORA_CLEAR_SCAN_CACHE" });
@@ -109,8 +103,18 @@ async function onScan() {
     currentItems = response.items || [];
     await persistState();
     renderItems(currentItems);
-    const totalRefs = currentItems.reduce((sum, item) => sum + Number(item?.referenceCount || 0), 0);
-    setStatus(`Found ${currentItems.length} item(s), refs: ${totalRefs}.`, { state: "done", busy: false });
+
+    if (currentItems.length > 0) {
+      setStatus(`Found ${currentItems.length} item(s). Enriching references...`, { state: "download", busy: true });
+      // Enrichment runs directly in this window (no messaging needed)
+      await batchEnrichAllItems(currentItems, sharedDetailCache, "enrich");
+      await persistState();
+      renderItems(currentItems);
+      const totalRefs = currentItems.reduce((sum, item) => sum + Number(item?.referenceCount || 0), 0);
+      setStatus(`Found ${currentItems.length} item(s), refs: ${totalRefs}. Ready to download.`, { state: "done", busy: false });
+    } else {
+      setStatus("No items found.", { state: "done", busy: false });
+    }
   } catch (error) {
     setStatus(`Scan failed: ${error.message}`, { state: "error", busy: false });
   } finally {
@@ -164,11 +168,21 @@ async function onDownloadAll() {
   activeDownloadInProgress = true;
   setStatus(`Starting downloads (${limitedItems.length} item(s))...`, { state: "download", busy: true });
   try {
-    const response = await runDownload(limitedItems, false);
-    const { requested, completed, failed, skipped } = response.result;
-    lastFailedItems = response.result.failedItems || [];
+    const result = await downloadAll(limitedItems, {
+      folderPrefix: folderPrefixEl.value.trim() || "SORA_EXPORT",
+      exportCsv: csvToggle.checked,
+      exportManifest: manifestToggle.checked,
+      exportImageJson: imageJsonToggle.checked,
+      skipExisting: skipExistingToggle.checked,
+      organizeByGeneration: organizeByGenerationToggle.checked,
+      exportZip: true,
+      preferPng: true,
+      mode: downloadModeEl.value === "fast" ? "fast" : "safe",
+      retryOnly: false
+    });
+    lastFailedItems = result.failedItems || [];
     await persistState();
-    setStatus(`Done. Requested: ${requested}, completed: ${completed}, failed: ${failed}, skipped: ${skipped}.`, { state: "done", busy: false });
+    setStatus(`Done. Requested: ${result.requested}, completed: ${result.completed}, failed: ${result.failed}, skipped: ${result.skipped}.`, { state: "done", busy: false });
   } catch (error) {
     setStatus(`Download failed: ${error.message}`, { state: "error", busy: false });
   } finally {
@@ -187,11 +201,21 @@ async function onRetryFailedOnly() {
   activeDownloadInProgress = true;
   setStatus(`Retrying ${lastFailedItems.length} failed item(s)...`, { state: "download", busy: true });
   try {
-    const response = await runDownload(lastFailedItems, true);
-    const { requested, completed, failed, skipped } = response.result;
-    lastFailedItems = response.result.failedItems || [];
+    const result = await downloadAll(lastFailedItems, {
+      folderPrefix: folderPrefixEl.value.trim() || "SORA_EXPORT",
+      exportCsv: csvToggle.checked,
+      exportManifest: manifestToggle.checked,
+      exportImageJson: imageJsonToggle.checked,
+      skipExisting: skipExistingToggle.checked,
+      organizeByGeneration: organizeByGenerationToggle.checked,
+      exportZip: true,
+      preferPng: true,
+      mode: downloadModeEl.value === "fast" ? "fast" : "safe",
+      retryOnly: true
+    });
+    lastFailedItems = result.failedItems || [];
     await persistState();
-    setStatus(`Retry done. Requested: ${requested}, completed: ${completed}, failed: ${failed}, skipped: ${skipped}.`, { state: "done", busy: false });
+    setStatus(`Retry done. Requested: ${result.requested}, completed: ${result.completed}, failed: ${result.failed}, skipped: ${result.skipped}.`, { state: "done", busy: false });
   } catch (error) {
     setStatus(`Retry failed: ${error.message}`, { state: "error", busy: false });
   } finally {
@@ -230,33 +254,6 @@ async function onClearCache() {
   } finally {
     setBusy(false);
   }
-}
-
-async function runDownload(items, retryOnly) {
-  const payload = {
-    items,
-    folderPrefix: folderPrefixEl.value.trim() || "SORA_EXPORT",
-    exportCsv: csvToggle.checked,
-    exportManifest: manifestToggle.checked,
-    exportImageJson: imageJsonToggle.checked,
-    skipExisting: skipExistingToggle.checked,
-    organizeByGeneration: organizeByGenerationToggle.checked,
-    exportZip: true,
-    preferPng: true,
-    mode: downloadModeEl.value === "fast" ? "fast" : "safe",
-    retryOnly
-  };
-
-  const response = await chrome.runtime.sendMessage({
-    type: "SORA_DOWNLOAD_ITEMS",
-    payload
-  });
-
-  if (!response || !response.ok) {
-    throw new Error(response?.error || "Download request failed.");
-  }
-
-  return response;
 }
 
 function renderItems(items) {
@@ -322,22 +319,15 @@ function stripLeadingListMarker(input) {
   return String(input).replace(/^\s*\d+\s*[\.\)]\s+/, "");
 }
 
-function getActiveTab() {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      const tab = tabs[0];
-      if (!tab || typeof tab.id !== "number") {
-        reject(new Error("No active tab found."));
-        return;
-      }
-      resolve(tab);
-    });
-  });
+async function getActiveTab() {
+  // Query all windows for active tabs, then pick the best one
+  // (the detached popup window has no tabs, so we skip it)
+  const tabs = await chrome.tabs.query({ active: true });
+  const httpTab = tabs.find((t) => /^https?:\/\//i.test(t.url || ""));
+  if (httpTab && typeof httpTab.id === "number") return httpTab;
+  const anyTab = tabs.find((t) => typeof t.id === "number");
+  if (anyTab) return anyTab;
+  throw new Error("No active tab found. Open a web page first.");
 }
 
 function getMaxItems() {
@@ -357,7 +347,7 @@ async function sendMessageWithAutoInject(tabId, message) {
       throw error;
     }
     await injectContentScript(tabId);
-    await sleep(100);
+    await sleepMs(100);
     return chrome.tabs.sendMessage(tabId, message);
   }
 }
@@ -400,7 +390,7 @@ function ensureTabIsScannable(tab) {
   }
 }
 
-function sleep(ms) {
+function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -468,10 +458,8 @@ function refreshControlState() {
   scanBtn.disabled = uiBusy || scanning;
   pauseScanBtn.disabled = !scanning;
 
-  // Allow clearing/reset while scan is in progress.
   clearCacheBtn.disabled = uiBusy && !scanning;
 
-  // Keep download/retry locked while actively scrolling, but allow when paused.
   const lockDownloads = activeDownloadInProgress || (uiBusy && !scanning) || scanBusy;
   downloadBtn.disabled = lockDownloads;
   retryFailedBtn.disabled = lockDownloads || !lastFailedItems.length;
@@ -489,11 +477,11 @@ function setSectionCollapsed(which, collapsed) {
   const btn = toggleExportSectionBtn;
   if (collapsed) {
     body.classList.add("section-collapsed");
-    btn.textContent = "▸";
+    btn.textContent = "\u25b8";
     btn.setAttribute("aria-label", "Expand export settings");
   } else {
     body.classList.remove("section-collapsed");
-    btn.textContent = "▾";
+    btn.textContent = "\u25be";
     btn.setAttribute("aria-label", "Collapse export settings");
   }
 }
