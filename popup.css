@@ -25,7 +25,9 @@ body {
 
 body {
   min-width: 410px;
+  min-height: 100vh;
   position: relative;
+  overflow-x: hidden;
 }
 
 .app {
@@ -86,7 +88,18 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.section-head h2 {
+  margin-bottom: 0;
+}
+
+.section-head:not(:last-child) {
   margin-bottom: 8px;
+}
+
+.section-head:last-child {
+  margin-bottom: 0;
 }
 
 .section-toggle {

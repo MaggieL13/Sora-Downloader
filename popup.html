@@ -39,32 +39,12 @@
         </div>
         <div id="exportSettingsBody">
           <label class="option checkbox">
-            <input id="csvToggle" type="checkbox" />
-            <span>Export combined CSV</span>
+            <input id="organizeByGenerationToggle" type="checkbox" checked />
+            <span>Organize by generation folders</span>
           </label>
 
-          <label class="option checkbox">
-            <input id="manifestToggle" type="checkbox" />
-            <span>Export readable run summary (TXT)</span>
-          </label>
-
-          <label class="option checkbox">
-            <input id="imageJsonToggle" type="checkbox" />
-            <span>Export per-image JSON sidecars</span>
-          </label>
-
-          <label class="option checkbox">
-            <input id="skipExistingToggle" type="checkbox" checked />
-            <span>Skip already downloaded (resume friendly)</span>
-          </label>
-
-        <label class="option checkbox">
-          <input id="organizeByGenerationToggle" type="checkbox" checked />
-          <span>Organize by generation folders</span>
-        </label>
-
-        <p class="subhint">Export format is always ZIP (one archive per run).</p>
-        <p class="subhint">Image output prefers native PNG; WebP/JPEG converts to PNG as fallback.</p>
+          <p class="subhint">Export format is always ZIP (one archive per run).</p>
+          <p class="subhint">Image output prefers native PNG; WebP/JPEG converts to PNG as fallback.</p>
 
           <label class="option">
             Download mode

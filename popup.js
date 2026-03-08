@@ -11,10 +11,6 @@ const statusEl = document.getElementById("status");
 const statusSpinnerEl = document.getElementById("statusSpinner");
 const statusStateEl = document.getElementById("statusState");
 const itemsList = document.getElementById("itemsList");
-const csvToggle = document.getElementById("csvToggle");
-const manifestToggle = document.getElementById("manifestToggle");
-const imageJsonToggle = document.getElementById("imageJsonToggle");
-const skipExistingToggle = document.getElementById("skipExistingToggle");
 const organizeByGenerationToggle = document.getElementById("organizeByGenerationToggle");
 const autoScrollToggle = document.getElementById("autoScrollToggle");
 const downloadModeEl = document.getElementById("downloadMode");
@@ -42,7 +38,7 @@ chrome.runtime.onMessage.addListener((message) => {
     const stagnantRounds = Number(progress.stagnantRounds || 0);
     const stagnantLimit = Number(progress.stagnantLimit || 0);
     const y = Number(progress.scrollY || 0);
-    setStatus(`Scanning... ${step}/${maxSteps} | found: ${found} | y: ${y}px | stalls: ${stagnantRounds}/${stagnantLimit}`, { state: "scan", busy: true });
+    setStatus(`Scanning... ${step}/${maxSteps} | found: ${found}`, { state: "scan", busy: true });
     requestScanSnapshot();
   }
 });
@@ -55,9 +51,9 @@ window.addEventListener("sora-download-progress", (e) => {
   if (phase === "enriching") {
     setStatus(p.message ? String(p.message) : `Fetching references... ${p.processed}/${p.requested}`, { state: "download", busy: true });
   } else if (phase === "finalizing") {
-    setStatus(p.message ? String(p.message) : `Finalizing ${mode.toUpperCase()}... completed: ${p.completed}, failed: ${p.failed}, skipped: ${p.skipped}`, { state: "download", busy: true });
+    setStatus("Building ZIP file...", { state: "download", busy: true });
   } else {
-    setStatus(`Downloading ${mode.toUpperCase()}... ${p.processed}/${p.requested} | ok: ${p.completed} | failed: ${p.failed} | skipped: ${p.skipped}`, { state: "download", busy: true });
+    setStatus(`Downloading... ${p.processed}/${p.requested} | ok: ${p.completed} | failed: ${p.failed}`, { state: "download", busy: true });
   }
 });
 
@@ -75,7 +71,7 @@ restoreState();
 
 async function onScan() {
   setBusy(true);
-  setStatus(autoScrollToggle.checked ? "Auto-scanning (scrolling)..." : "Scanning active tab...", { state: "scan", busy: true });
+  setStatus("Scanning page...", { state: "scan", busy: true });
   try {
     const tab = await getActiveTab();
     activeScanInProgress = true;
@@ -105,13 +101,13 @@ async function onScan() {
     renderItems(currentItems);
 
     if (currentItems.length > 0) {
-      setStatus(`Found ${currentItems.length} item(s). Enriching references...`, { state: "download", busy: true });
+      setStatus(`Found ${currentItems.length} items. Fetching reference details...`, { state: "download", busy: true });
       // Enrichment runs directly in this window (no messaging needed)
       await batchEnrichAllItems(currentItems, sharedDetailCache, "enrich");
       await persistState();
       renderItems(currentItems);
       const totalRefs = currentItems.reduce((sum, item) => sum + Number(item?.referenceCount || 0), 0);
-      setStatus(`Found ${currentItems.length} item(s), refs: ${totalRefs}. Ready to download.`, { state: "done", busy: false });
+      setStatus(`Found ${currentItems.length} items${totalRefs ? ` (${totalRefs} references)` : ""}. Ready to download.`, { state: "done", busy: false });
     } else {
       setStatus("No items found.", { state: "done", busy: false });
     }
@@ -166,14 +162,11 @@ async function onDownloadAll() {
 
   setBusy(true);
   activeDownloadInProgress = true;
-  setStatus(`Starting downloads (${limitedItems.length} item(s))...`, { state: "download", busy: true });
+  setStatus(`Starting download... (${limitedItems.length} items)`, { state: "download", busy: true });
   try {
     const result = await downloadAll(limitedItems, {
       folderPrefix: folderPrefixEl.value.trim() || "SORA_EXPORT",
-      exportCsv: csvToggle.checked,
-      exportManifest: manifestToggle.checked,
-      exportImageJson: imageJsonToggle.checked,
-      skipExisting: skipExistingToggle.checked,
+
       organizeByGeneration: organizeByGenerationToggle.checked,
       exportZip: true,
       preferPng: true,
@@ -182,7 +175,10 @@ async function onDownloadAll() {
     });
     lastFailedItems = result.failedItems || [];
     await persistState();
-    setStatus(`Done. Requested: ${result.requested}, completed: ${result.completed}, failed: ${result.failed}, skipped: ${result.skipped}.`, { state: "done", busy: false });
+    const doneMsg = result.failed > 0
+      ? `Done! ${result.completed} of ${result.requested} downloaded (${result.failed} failed).`
+      : `Done! ${result.completed} of ${result.requested} downloaded.`;
+    setStatus(doneMsg, { state: "done", busy: false });
   } catch (error) {
     setStatus(`Download failed: ${error.message}`, { state: "error", busy: false });
   } finally {
@@ -193,20 +189,17 @@ async function onDownloadAll() {
 
 async function onRetryFailedOnly() {
   if (!lastFailedItems.length) {
-    setStatus("No failed items available to retry yet.", { state: "idle", busy: false });
+    setStatus("No failed items to retry.", { state: "idle", busy: false });
     return;
   }
 
   setBusy(true);
   activeDownloadInProgress = true;
-  setStatus(`Retrying ${lastFailedItems.length} failed item(s)...`, { state: "download", busy: true });
+  setStatus(`Retrying ${lastFailedItems.length} failed items...`, { state: "download", busy: true });
   try {
     const result = await downloadAll(lastFailedItems, {
       folderPrefix: folderPrefixEl.value.trim() || "SORA_EXPORT",
-      exportCsv: csvToggle.checked,
-      exportManifest: manifestToggle.checked,
-      exportImageJson: imageJsonToggle.checked,
-      skipExisting: skipExistingToggle.checked,
+
       organizeByGeneration: organizeByGenerationToggle.checked,
       exportZip: true,
       preferPng: true,
@@ -215,7 +208,10 @@ async function onRetryFailedOnly() {
     });
     lastFailedItems = result.failedItems || [];
     await persistState();
-    setStatus(`Retry done. Requested: ${result.requested}, completed: ${result.completed}, failed: ${result.failed}, skipped: ${result.skipped}.`, { state: "done", busy: false });
+    const retryMsg = result.failed > 0
+      ? `Retry done! ${result.completed} of ${result.requested} recovered (${result.failed} still failed).`
+      : `Retry done! ${result.completed} of ${result.requested} recovered.`;
+    setStatus(retryMsg, { state: "done", busy: false });
   } catch (error) {
     setStatus(`Retry failed: ${error.message}`, { state: "error", busy: false });
   } finally {
@@ -399,10 +395,7 @@ async function persistState() {
     currentItems,
     lastFailedItems,
     settings: {
-      exportCsv: csvToggle.checked,
-      exportManifest: manifestToggle.checked,
-      exportImageJson: imageJsonToggle.checked,
-      skipExisting: skipExistingToggle.checked,
+
       organizeByGeneration: organizeByGenerationToggle.checked,
       autoScroll: autoScrollToggle.checked,
       downloadMode: downloadModeEl.value,
@@ -425,10 +418,6 @@ async function restoreState() {
     lastFailedItems = Array.isArray(state.lastFailedItems) ? state.lastFailedItems : [];
 
     const settings = state.settings || {};
-    if (typeof settings.exportCsv === "boolean") csvToggle.checked = settings.exportCsv;
-    if (typeof settings.exportManifest === "boolean") manifestToggle.checked = settings.exportManifest;
-    if (typeof settings.exportImageJson === "boolean") imageJsonToggle.checked = settings.exportImageJson;
-    if (typeof settings.skipExisting === "boolean") skipExistingToggle.checked = settings.skipExisting;
     if (typeof settings.organizeByGeneration === "boolean") organizeByGenerationToggle.checked = settings.organizeByGeneration;
     if (typeof settings.autoScroll === "boolean") autoScrollToggle.checked = settings.autoScroll;
     if (typeof settings.downloadMode === "string") downloadModeEl.value = settings.downloadMode;

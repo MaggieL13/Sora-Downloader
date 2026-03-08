@@ -14,41 +14,18 @@ async function downloadAllAsFiles(items, options) {
   const cleanedPrefix = sanitizePathSegment(options.folderPrefix || "SORA_EXPORT");
   const profile = getModeProfile(options.mode);
   const runId = buildRunId();
-  const csvRows = [["index", "taskId", "presetId", "presetName", "referenceCount", "referenceMediaIds", "prompt", "imageUrl", "pageUrl", "collectedAt"]];
   const failures = [];
   const failedItems = [];
-  const completedItems = [];
   const generationMap = new Map();
   let completed = 0;
-  let skipped = 0;
   let processed = 0;
   const nativeDownloadCache = new Map();
-
-  const storageKey = buildResumeStorageKey(cleanedPrefix, "files");
-  const previouslyDownloaded = options.skipExisting ? await getDownloadedKeySet(storageKey) : new Set();
 
   await batchEnrichAllItems(items, sharedDetailCache, "files");
 
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
     const index = i + 1;
-    const identityKey = getItemIdentityKey(item);
-
-    if (options.skipExisting && identityKey && previouslyDownloaded.has(identityKey)) {
-      skipped += 1;
-      processed += 1;
-      emitDownloadProgress({
-        phase: "downloading",
-        mode: "files",
-        processed,
-        requested: items.length,
-        completed,
-        failed: failures.length,
-        skipped,
-        currentIndex: index
-      });
-      continue;
-    }
 
     const stem = `item_${String(index).padStart(4, "0")}`;
     const primaryUrl = item.imageUrl || "";
@@ -62,7 +39,6 @@ async function downloadAllAsFiles(items, options) {
       ? `img_${String(imageSeq).padStart(2, "0")}`
       : stem;
     const baseFolder = options.organizeByGeneration ? `${cleanedPrefix}/${group.folder}` : cleanedPrefix;
-    const jsonFilename = `${baseFolder}/${imageBaseName}.json`;
 
     try {
       const fetched = await fetchFromCandidates(candidateUrls, profile.attemptDelayMs);
@@ -75,15 +51,9 @@ async function downloadAllAsFiles(items, options) {
       metadata.convertedToPng = outputExt === ".png" && !/\.png(?:[?#]|$)/i.test(fetched.url);
 
       await downloadBlob(new Blob([processed.bytes], { type: processed.mimeType }), imageFilename);
-      if (options.exportImageJson) {
-        await downloadTextFile(JSON.stringify(metadata, null, 2), jsonFilename, "application/json");
-      }
-      csvRows.push(buildCsvRow(index, metadata));
 
       completed += 1;
-      completedItems.push(metadata);
       appendToGroupState(groupState, imageBaseName, outputExt, metadata);
-      if (identityKey) previouslyDownloaded.add(identityKey);
     } catch (error) {
       failures.push({ index, imageUrl: primaryUrl, error: String(error) });
       failedItems.push(item);
@@ -96,20 +66,11 @@ async function downloadAllAsFiles(items, options) {
       requested: items.length,
       completed,
       failed: failures.length,
-      skipped,
+      skipped: 0,
       currentIndex: index
     });
 
     await sleep(profile.itemDelayMs);
-  }
-
-  if (options.skipExisting) {
-    await setDownloadedKeySet(storageKey, previouslyDownloaded);
-  }
-
-  if (options.exportCsv) {
-    const csvContent = csvRows.map((row) => row.join(",")).join("\n");
-    await downloadTextFile(csvContent, `${cleanedPrefix}/prompts.csv`, "text/csv");
   }
 
   if (options.organizeByGeneration) {
@@ -120,21 +81,16 @@ async function downloadAllAsFiles(items, options) {
       requested: items.length,
       completed,
       failed: failures.length,
-      skipped
+      skipped: 0
     });
     await writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache);
-  }
-
-  const manifest = buildManifest(runId, options, cleanedPrefix, items.length, completed, failures, skipped, completedItems);
-  if (options.exportManifest) {
-    await downloadTextFile(buildRunSummaryText(manifest), `${cleanedPrefix}/summary_${runId}.txt`, "text/plain");
   }
 
   return {
     requested: items.length,
     completed,
     failed: failures.length,
-    skipped,
+    skipped: 0,
     failures,
     failedItems,
     runId,
@@ -147,41 +103,18 @@ async function downloadAllAsZip(items, options) {
   const profile = getModeProfile(options.mode);
   const runId = buildRunId();
   const zip = new SimpleZipWriter();
-  const csvRows = [["index", "taskId", "presetId", "presetName", "referenceCount", "referenceMediaIds", "prompt", "imageUrl", "pageUrl", "collectedAt"]];
   const failures = [];
   const failedItems = [];
-  const completedItems = [];
   const generationMap = new Map();
   let completed = 0;
-  let skipped = 0;
   let processed = 0;
   const nativeDownloadCache = new Map();
-
-  const storageKey = buildResumeStorageKey(cleanedPrefix, "zip");
-  const previouslyDownloaded = options.skipExisting ? await getDownloadedKeySet(storageKey) : new Set();
 
   await batchEnrichAllItems(items, sharedDetailCache, "zip");
 
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
     const index = i + 1;
-    const identityKey = getItemIdentityKey(item);
-
-    if (options.skipExisting && identityKey && previouslyDownloaded.has(identityKey)) {
-      skipped += 1;
-      processed += 1;
-      emitDownloadProgress({
-        phase: "downloading",
-        mode: "zip",
-        processed,
-        requested: items.length,
-        completed,
-        failed: failures.length,
-        skipped,
-        currentIndex: index
-      });
-      continue;
-    }
 
     const stem = `item_${String(index).padStart(4, "0")}`;
     const primaryUrl = item.imageUrl || "";
@@ -195,7 +128,6 @@ async function downloadAllAsZip(items, options) {
       ? `img_${String(imageSeq).padStart(2, "0")}`
       : stem;
     const baseFolder = options.organizeByGeneration ? `${cleanedPrefix}/${group.folder}` : cleanedPrefix;
-    const jsonPath = `${baseFolder}/${imageBaseName}.json`;
 
     try {
       const fetched = await fetchFromCandidates(candidateUrls, profile.attemptDelayMs);
@@ -208,15 +140,9 @@ async function downloadAllAsZip(items, options) {
       metadata.convertedToPng = outputExt === ".png" && !/\.png(?:[?#]|$)/i.test(fetched.url);
 
       zip.addFile(imagePath, processed.bytes);
-      if (options.exportImageJson) {
-        zip.addTextFile(jsonPath, JSON.stringify(metadata, null, 2));
-      }
-      csvRows.push(buildCsvRow(index, metadata));
 
       completed += 1;
-      completedItems.push(metadata);
       appendToGroupState(groupState, imageBaseName, outputExt, metadata);
-      if (identityKey) previouslyDownloaded.add(identityKey);
     } catch (error) {
       failures.push({ index, imageUrl: primaryUrl, error: String(error) });
       failedItems.push(item);
@@ -229,19 +155,11 @@ async function downloadAllAsZip(items, options) {
       requested: items.length,
       completed,
       failed: failures.length,
-      skipped,
+      skipped: 0,
       currentIndex: index
     });
 
     await sleep(profile.itemDelayMs);
-  }
-
-  if (options.skipExisting) {
-    await setDownloadedKeySet(storageKey, previouslyDownloaded);
-  }
-
-  if (options.exportCsv) {
-    zip.addTextFile(`${cleanedPrefix}/prompts.csv`, csvRows.map((row) => row.join(",")).join("\n"));
   }
 
   if (options.organizeByGeneration) {
@@ -252,14 +170,9 @@ async function downloadAllAsZip(items, options) {
       requested: items.length,
       completed,
       failed: failures.length,
-      skipped
+      skipped: 0
     });
     await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache);
-  }
-
-  const manifest = buildManifest(runId, options, cleanedPrefix, items.length, completed, failures, skipped, completedItems);
-  if (options.exportManifest) {
-    zip.addTextFile(`${cleanedPrefix}/summary_${runId}.txt`, buildRunSummaryText(manifest));
   }
 
   if (zip.entries.length === 0) {
@@ -271,11 +184,8 @@ async function downloadAllAsZip(items, options) {
         `Requested: ${items.length}`,
         `Completed: ${completed}`,
         `Failed: ${failures.length}`,
-        `Skipped: ${skipped}`,
         "",
-        options.skipExisting
-          ? "Tip: 'Skip already downloaded' is enabled. Disable it to force re-export."
-          : "Tip: Re-run scan and try download again."
+        "Tip: Re-run scan and try download again."
       ].join("\n")
     );
   }
@@ -288,7 +198,7 @@ async function downloadAllAsZip(items, options) {
     requested: items.length,
     completed,
     failed: failures.length,
-    skipped,
+    skipped: 0,
     message: "Writing ZIP file..."
   });
   await downloadBlob(
@@ -300,7 +210,7 @@ async function downloadAllAsZip(items, options) {
     requested: items.length,
     completed,
     failed: failures.length,
-    skipped,
+    skipped: 0,
     failures,
     failedItems,
     runId,
@@ -601,22 +511,7 @@ function qualityScoreForPreferredSource(url) {
   return score;
 }
 
-// ── CSV / group helpers ──
-
-function buildCsvRow(index, metadata) {
-  return [
-    String(index),
-    csvEscape(metadata.taskId),
-    csvEscape(metadata.presetId),
-    csvEscape(metadata.presetName),
-    csvEscape(metadata.referenceCount),
-    csvEscape((metadata.referenceMediaIds || []).join("|")),
-    csvEscape(metadata.prompt),
-    csvEscape(metadata.imageUrl),
-    csvEscape(metadata.pageUrl),
-    csvEscape(metadata.collectedAt)
-  ];
-}
+// ── Group helpers ──
 
 function appendToGroupState(groupState, imageBaseName, ext, metadata) {
   groupState.images.push({
@@ -738,73 +633,6 @@ async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, 
   }
 }
 
-// ── Manifest / summary ──
-
-function buildManifest(runId, options, cleanedPrefix, requested, completed, failures, skipped, completedItems) {
-  return {
-    runId,
-    generatedAt: new Date().toISOString(),
-    mode: options.mode,
-    retryOnly: options.retryOnly,
-    options: {
-      folderPrefix: cleanedPrefix,
-      exportCsv: options.exportCsv,
-      exportManifest: options.exportManifest,
-      exportImageJson: options.exportImageJson,
-      skipExisting: options.skipExisting,
-      organizeByGeneration: options.organizeByGeneration,
-      exportZip: options.exportZip,
-      preferPng: options.preferPng
-    },
-    stats: {
-      requested,
-      completed,
-      failed: failures.length,
-      skipped
-    },
-    failures,
-    completedItems
-  };
-}
-
-function buildRunSummaryText(manifest) {
-  const lines = [];
-  lines.push("SORA Export Run Summary");
-  lines.push("=======================");
-  lines.push(`Run ID: ${manifest.runId}`);
-  lines.push(`Generated At: ${manifest.generatedAt}`);
-  lines.push(`Mode: ${manifest.mode}`);
-  lines.push(`Retry Only: ${manifest.retryOnly ? "Yes" : "No"}`);
-  lines.push("");
-  lines.push("Options");
-  lines.push("-------");
-  lines.push(`Folder Prefix: ${manifest.options.folderPrefix}`);
-  lines.push(`ZIP Export: ${manifest.options.exportZip ? "Yes" : "No"}`);
-  lines.push(`Organize by Generation: ${manifest.options.organizeByGeneration ? "Yes" : "No"}`);
-  lines.push(`Prefer PNG: ${manifest.options.preferPng ? "Yes" : "No"}`);
-  lines.push(`Per-Image JSON: ${manifest.options.exportImageJson ? "Yes" : "No"}`);
-  lines.push(`CSV Export: ${manifest.options.exportCsv ? "Yes" : "No"}`);
-  lines.push("");
-  lines.push("Stats");
-  lines.push("-----");
-  lines.push(`Requested: ${manifest.stats.requested}`);
-  lines.push(`Completed: ${manifest.stats.completed}`);
-  lines.push(`Failed: ${manifest.stats.failed}`);
-  lines.push(`Skipped: ${manifest.stats.skipped}`);
-  lines.push("");
-  if (manifest.failures.length) {
-    lines.push("Failures");
-    lines.push("--------");
-    for (const failure of manifest.failures) {
-      lines.push(`- #${failure.index}: ${failure.error}`);
-      lines.push(`  URL: ${failure.imageUrl}`);
-    }
-  } else {
-    lines.push("Failures: none");
-  }
-  return `${lines.join("\n")}\n`;
-}
-
 // ── Download primitives (using URL.createObjectURL) ──
 
 function downloadUrl(url, filename) {
@@ -833,21 +661,6 @@ function downloadBlob(blob, filename) {
       }
     );
   });
-}
-
-async function downloadFromCandidates(urls, filename, attemptDelayMs) {
-  if (!urls.length) throw new Error("No image URL candidates provided.");
-  let lastError = null;
-  for (let i = 0; i < urls.length; i += 1) {
-    try {
-      await downloadUrl(urls[i], filename);
-      return urls[i];
-    } catch (error) {
-      lastError = error;
-      if (i < urls.length - 1) await sleep(attemptDelayMs);
-    }
-  }
-  throw lastError || new Error("No candidate URLs could be downloaded.");
 }
 
 async function fetchFromCandidates(urls, attemptDelayMs) {
@@ -969,14 +782,6 @@ function getModeProfile(mode) {
     return { itemDelayMs: 120, attemptDelayMs: 80 };
   }
   return { itemDelayMs: 900, attemptDelayMs: 300 };
-}
-
-function getItemIdentityKey(item) {
-  if (!item) return "";
-  if (item.detailUrl) return `detail:${item.detailUrl}`;
-  if (item.taskId && item.imageUrl) return `task-image:${item.taskId}:${item.imageUrl}`;
-  if (item.imageUrl) return `image:${item.imageUrl}`;
-  return "";
 }
 
 function getGenerationGroup(item, index) {
@@ -1160,11 +965,6 @@ function extensionToMime(ext) {
   return "";
 }
 
-function csvEscape(value) {
-  const input = String(value ?? "");
-  return `"${input.replace(/"/g, '""')}"`;
-}
-
 function emitDownloadProgress(progress) {
   window.dispatchEvent(new CustomEvent("sora-download-progress", { detail: progress }));
 }
@@ -1182,26 +982,6 @@ function buildRunId() {
   const min = String(d.getMinutes()).padStart(2, "0");
   const sec = String(d.getSeconds()).padStart(2, "0");
   return `${yyyy}${mm}${dd}_${hh}${min}${sec}`;
-}
-
-function getDownloadedKeySet(key) {
-  return new Promise((resolve) => {
-    chrome.storage.local.get([key], (result) => {
-      if (chrome.runtime.lastError) return resolve(new Set());
-      const list = Array.isArray(result[key]) ? result[key] : [];
-      resolve(new Set(list.filter((v) => typeof v === "string" && v.length > 0)));
-    });
-  });
-}
-
-function setDownloadedKeySet(key, keySet) {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ [key]: Array.from(keySet) }, () => resolve());
-  });
-}
-
-function buildResumeStorageKey(folderPrefix, outputKind) {
-  return `sora_downloaded::${folderPrefix}::${outputKind}`;
 }
 
 // ── ZIP Writer ──
