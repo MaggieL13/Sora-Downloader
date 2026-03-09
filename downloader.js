@@ -5,7 +5,7 @@ const sharedDetailCache = new Map();
 
 async function downloadAll(items, options) {
   if (options.exportZip) {
-    return downloadAllAsZip(items, options);
+    return downloadAllAsZipBatched(items, options);
   }
   return downloadAllAsFiles(items, options);
 }
@@ -83,7 +83,7 @@ async function downloadAllAsFiles(items, options) {
       failed: failures.length,
       skipped: 0
     });
-    await writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache);
+    await writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache, options);
   }
 
   return {
@@ -95,6 +95,162 @@ async function downloadAllAsFiles(items, options) {
     failedItems,
     runId,
     output: "files"
+  };
+}
+
+async function downloadAllAsZipBatched(items, options) {
+  const batchSize = Math.max(50, Math.min(1000, options.batchSize || 300));
+  const totalBatches = Math.ceil(items.length / batchSize);
+  const cleanedPrefix = sanitizePathSegment(options.folderPrefix || "SORA_EXPORT");
+  const profile = getModeProfile(options.mode);
+  const runId = buildRunId();
+  const cancelToken = options.cancelToken || { cancelled: false };
+  const nativeDownloadCache = new Map();
+  let overallCompleted = 0;
+  let overallFailed = 0;
+  let overallProcessed = 0;
+  const allFailedItems = [];
+
+  await batchEnrichAllItems(items, sharedDetailCache, "zip", cancelToken);
+  if (cancelToken.cancelled) {
+    return { requested: items.length, completed: 0, failed: 0, skipped: items.length, batches: 0, failedItems: [], runId, output: "zip" };
+  }
+
+  for (let batchNum = 0; batchNum < totalBatches; batchNum += 1) {
+    if (cancelToken.cancelled) break;
+
+    const batchStart = batchNum * batchSize;
+    const batchItems = items.slice(batchStart, batchStart + batchSize);
+    const batchSuffix = totalBatches > 1 ? `_batch${batchNum + 1}of${totalBatches}` : "";
+    const zip = new SimpleZipWriter();
+    const generationMap = new Map();
+    let batchCompleted = 0;
+    let batchFailed = 0;
+    const failures = [];
+
+    // Pre-compute slots in order (so organizeByGeneration sequencing is correct)
+    const slots = [];
+    for (let i = 0; i < batchItems.length; i += 1) {
+      const item = batchItems[i];
+      const globalIndex = batchStart + i + 1;
+      const stem = `item_${String(globalIndex).padStart(4, "0")}`;
+      const primaryUrl = item.imageUrl || "";
+      const group = getGenerationGroup(item, globalIndex);
+      // First time seeing this group in this batch? Number it with globalIndex for uniqueness
+      if (!generationMap.has(group.groupKey)) {
+        group.folder = `${String(globalIndex).padStart(4, "0")}_${group.folder}`;
+      }
+      const groupState = getOrCreateGroupState(generationMap, group);
+      const imageBaseName = options.organizeByGeneration
+        ? `img_${String(globalIndex).padStart(4, "0")}`
+        : stem;
+      const baseFolder = options.organizeByGeneration ? `${cleanedPrefix}/${groupState.folder}` : cleanedPrefix;
+      slots.push({ item, globalIndex, stem, primaryUrl, group, groupState, imageBaseName, baseFolder, index: i });
+    }
+
+    // Concurrent worker pool for image fetching
+    const CONCURRENCY = 5;
+    let nextSlot = 0;
+    const slotResults = new Array(slots.length);
+
+    async function worker() {
+      while (nextSlot < slots.length && !cancelToken.cancelled) {
+        const slotIdx = nextSlot++;
+        const slot = slots[slotIdx];
+        const { item, globalIndex, primaryUrl, imageBaseName, baseFolder } = slot;
+        const candidates = Array.isArray(item.imageCandidates) ? item.imageCandidates.filter(Boolean) : [];
+
+        try {
+          const candidateUrls = await buildCandidateUrls(item, primaryUrl, candidates, nativeDownloadCache);
+          const ext = guessExtension(candidateUrls[0] || primaryUrl);
+          const fetched = await fetchFromCandidates(candidateUrls, profile.attemptDelayMs);
+          const processed = await processImageBytes(fetched.bytes, fetched.url, options.preferPng);
+          const outputExt = processed.ext || ext;
+          const imagePath = `${baseFolder}/${imageBaseName}${outputExt}`;
+          const metadata = buildMetadata(item, globalIndex, runId, fetched.url, candidateUrls);
+          metadata.outputFormat = outputExt.replace(".", "");
+          metadata.sourceUrl = fetched.url;
+          metadata.convertedToPng = outputExt === ".png" && !/\.png(?:[?#]|$)/i.test(fetched.url);
+          slotResults[slotIdx] = { ok: true, imagePath, bytes: processed.bytes, imageBaseName, outputExt, metadata };
+        } catch (error) {
+          slotResults[slotIdx] = { ok: false, error: String(error), globalIndex, primaryUrl, item };
+        }
+
+        // Update progress (safe — JS is single-threaded between awaits)
+        overallProcessed += 1;
+        const doneCount = slotResults.filter(Boolean).length;
+        const okSoFar = slotResults.filter(r => r && r.ok).length;
+        const failSoFar = slotResults.filter(r => r && !r.ok).length;
+        emitDownloadProgress({
+          phase: "downloading",
+          mode: "zip",
+          processed: overallProcessed,
+          requested: items.length,
+          completed: overallCompleted + okSoFar,
+          failed: overallFailed + failSoFar,
+          skipped: 0,
+          currentIndex: globalIndex,
+          batchNumber: batchNum + 1,
+          totalBatches,
+          batchItemsProcessed: doneCount,
+          batchItemsTotal: batchItems.length
+        });
+      }
+    }
+
+    // Launch workers
+    const workers = [];
+    for (let w = 0; w < CONCURRENCY; w += 1) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+
+    // Apply results to ZIP in original order (preserves consistent file ordering)
+    for (let i = 0; i < slots.length; i += 1) {
+      const result = slotResults[i];
+      if (!result) continue;
+      if (result.ok) {
+        zip.addFile(result.imagePath, result.bytes);
+        batchCompleted += 1;
+        appendToGroupState(slots[i].groupState, result.imageBaseName, result.outputExt, result.metadata);
+      } else {
+        failures.push({ index: result.globalIndex, imageUrl: result.primaryUrl, error: result.error });
+        allFailedItems.push(result.item);
+        batchFailed += 1;
+      }
+    }
+
+    overallCompleted += batchCompleted;
+    overallFailed += batchFailed;
+
+    if (options.organizeByGeneration && !cancelToken.cancelled) {
+      emitDownloadProgress({ phase: "finalizing", mode: "zip", processed: overallProcessed, requested: items.length, completed: overallCompleted, failed: overallFailed, skipped: 0, batchNumber: batchNum + 1, totalBatches });
+      await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options);
+    }
+
+    if (zip.entries.length === 0) {
+      zip.addTextFile(`${cleanedPrefix}/README.txt`, `No files were added to batch ${batchNum + 1}.\n`);
+    }
+
+    const zipBytes = zip.finalize();
+    emitDownloadProgress({ phase: "finalizing", mode: "zip", processed: overallProcessed, requested: items.length, completed: overallCompleted, failed: overallFailed, skipped: 0, message: `Writing ZIP${batchSuffix}...`, batchNumber: batchNum + 1, totalBatches });
+    await downloadBlob(new Blob([zipBytes], { type: "application/zip" }), `${cleanedPrefix}/${cleanedPrefix}_${runId}${batchSuffix}.zip`);
+
+    if (batchNum < totalBatches - 1 && !cancelToken.cancelled) {
+      emitDownloadProgress({ phase: "batch-transition", mode: "zip", processed: overallProcessed, requested: items.length, completed: overallCompleted, failed: overallFailed, skipped: 0, batchNumber: batchNum + 1, totalBatches, message: `Completed batch ${batchNum + 1}/${totalBatches}. Starting next...` });
+      await sleep(500);
+    }
+  }
+
+  return {
+    requested: items.length,
+    completed: overallCompleted,
+    failed: overallFailed,
+    skipped: 0,
+    batches: totalBatches,
+    failedItems: allFailedItems,
+    runId,
+    output: "zip"
   };
 }
 
@@ -172,7 +328,7 @@ async function downloadAllAsZip(items, options) {
       failed: failures.length,
       skipped: 0
     });
-    await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache);
+    await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options);
   }
 
   if (zip.entries.length === 0) {
@@ -298,12 +454,56 @@ function extractGenerationId(item) {
 
 // ── Enrichment ──
 
-async function batchEnrichAllItems(items, detailCache, mode) {
+/**
+ * Live-enrich items during scanning. Processes items one at a time (gentle on API)
+ * and skips items already enriched. Returns number of newly enriched items.
+ * Designed to be called repeatedly as new items arrive from scan snapshots.
+ */
+const _liveEnrichedKeys = new Set();
+let _liveEnrichRunning = false;
+
+async function liveEnrichItems(items, detailCache, cancelToken) {
+  if (_liveEnrichRunning) return 0;
+  _liveEnrichRunning = true;
+  let count = 0;
+  try {
+    for (const item of items) {
+      if (cancelToken && cancelToken.cancelled) break;
+      const key = item.detailUrl || item.imageUrl || "";
+      if (!key || _liveEnrichedKeys.has(key)) continue;
+      const genId = extractGenerationId(item);
+      if (!genId) {
+        _liveEnrichedKeys.add(key);
+        continue;
+      }
+      try {
+        await enrichItemReferences(item, detailCache);
+        _liveEnrichedKeys.add(key);
+        count++;
+      } catch {
+        // Non-fatal — will retry during full enrichment later
+      }
+      // Small delay to be gentle on the API during scanning
+      await sleep(150);
+    }
+  } finally {
+    _liveEnrichRunning = false;
+  }
+  return count;
+}
+
+function resetLiveEnrichState() {
+  _liveEnrichedKeys.clear();
+  _liveEnrichRunning = false;
+}
+
+async function batchEnrichAllItems(items, detailCache, mode, cancelToken) {
   const BATCH_SIZE = 8;
   let enriched = 0;
   const total = items.length;
 
   for (let i = 0; i < total; i += BATCH_SIZE) {
+    if (cancelToken && cancelToken.cancelled) break;
     const batch = items.slice(i, i + BATCH_SIZE);
     await Promise.all(batch.map((item) => enrichItemReferences(item, detailCache)));
     enriched += batch.length;
@@ -321,10 +521,6 @@ async function batchEnrichAllItems(items, detailCache, mode) {
 }
 
 async function enrichItemReferences(item, detailCache) {
-  if (Array.isArray(item.referenceImages) && item.referenceImages.length > 0) {
-    return;
-  }
-
   const token = await getAccessToken(detailCache);
   if (!token) return;
 
@@ -339,13 +535,30 @@ async function enrichItemReferences(item, detailCache) {
   );
   if (!genData) return;
 
+  // Pull prompt from API if we don't have one from the DOM
+  if ((!item.prompt || item.prompt === "Prompt not detected") && genData.prompt) {
+    item.prompt = genData.prompt;
+  }
+
+  // Pull preset from top-level API field first, then fall back to inpaint_items
+  if (!item.presetId && genData.preset_id) {
+    item.presetId = genData.preset_id;
+    item.presetUrl = `https://sora.chatgpt.com/explore/presets?pid=${genData.preset_id}`;
+  }
   if (!item.presetName && !item.presetId) {
     enrichPresetFromInpaintItems(item, genData.inpaint_items);
   }
+  // Fetch preset details (name + description) if we have an ID but no name
+  if (item.presetId && !item.presetName) {
+    await enrichPresetDetails(item, detailCache, token);
+  }
 
-  const refs = await resolveInpaintItems(genData.inpaint_items, detailCache, token);
-  if (refs.length) {
-    applyRefsToItem(item, refs);
+  // Only resolve references if we don't already have them
+  if (!Array.isArray(item.referenceImages) || item.referenceImages.length === 0) {
+    const refs = await resolveInpaintItems(genData.inpaint_items, detailCache, token);
+    if (refs.length) {
+      applyRefsToItem(item, refs);
+    }
   }
 }
 
@@ -459,6 +672,22 @@ async function resolveSingleInpaintItem(entry, cache, token) {
   };
 }
 
+async function enrichPresetDetails(item, detailCache, token) {
+  if (!item.presetId || !token) return;
+  const presetData = await fetchApiJson(
+    `https://sora.chatgpt.com/backend/presets/${item.presetId}`,
+    detailCache,
+    `preset:${item.presetId}`,
+    token
+  );
+  if (!presetData) return;
+  if (presetData.title) item.presetName = presetData.title;
+  if (presetData.prompt) item.presetDescription = presetData.prompt;
+  if (!item.presetUrl) {
+    item.presetUrl = `https://sora.chatgpt.com/explore/presets?pid=${item.presetId}`;
+  }
+}
+
 function enrichPresetFromInpaintItems(item, inpaintItems) {
   if (!Array.isArray(inpaintItems)) return;
   for (const entry of inpaintItems) {
@@ -556,24 +785,30 @@ function appendToGroupState(groupState, imageBaseName, ext, metadata) {
 
 // ── Generation summaries ──
 
-async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache) {
+async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache, options) {
+  const includePrompts = options?.includePrompts !== false;
+  const includePresets = options?.includePresets !== false;
+  const includeReferences = options?.includeReferences !== false;
+
   for (const groupState of generationMap.values()) {
-    if (groupState.prompt) {
+    if (includePrompts && groupState.prompt) {
       await downloadTextFile(`${groupState.prompt}\n`, `${cleanedPrefix}/${groupState.folder}/prompt.txt`, "text/plain");
     }
-    if (groupState.presetName || groupState.presetId || groupState.presetDescription || groupState.presetUrl) {
+    if (includePresets && (groupState.presetName || groupState.presetId || groupState.presetDescription || groupState.presetUrl)) {
       await downloadTextFile(
         buildPresetText(groupState),
         `${cleanedPrefix}/${groupState.folder}/preset.txt`,
         "text/plain"
       );
     }
-    await exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDownloadCache);
-    await downloadTextFile(
-      buildReferencesText(groupState),
-      `${cleanedPrefix}/${groupState.folder}/references.txt`,
-      "text/plain"
-    );
+    if (includeReferences) {
+      await exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDownloadCache);
+      await downloadTextFile(
+        buildReferencesText(groupState),
+        `${cleanedPrefix}/${groupState.folder}/references.txt`,
+        "text/plain"
+      );
+    }
 
     const generationMeta = {
       runId,
@@ -583,14 +818,18 @@ async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, run
       title: groupState.title,
       taskId: groupState.taskId,
       taskUrl: groupState.taskUrl,
-      presetName: groupState.presetName || "",
-      presetId: groupState.presetId || "",
-      presetUrl: groupState.presetUrl || "",
-      presetDescription: groupState.presetDescription || "",
-      references: Array.from(groupState.referencesByKey.values()),
-      prompt: groupState.prompt,
       images: groupState.images
     };
+    if (includePrompts) generationMeta.prompt = groupState.prompt;
+    if (includePresets) {
+      generationMeta.presetName = groupState.presetName || "";
+      generationMeta.presetId = groupState.presetId || "";
+      generationMeta.presetUrl = groupState.presetUrl || "";
+      generationMeta.presetDescription = groupState.presetDescription || "";
+    }
+    if (includeReferences) {
+      generationMeta.references = Array.from(groupState.referencesByKey.values());
+    }
     await downloadTextFile(
       JSON.stringify(generationMeta, null, 2),
       `${cleanedPrefix}/${groupState.folder}/metadata.json`,
@@ -599,16 +838,22 @@ async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, run
   }
 }
 
-async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache) {
+async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options) {
+  const includePrompts = options?.includePrompts !== false;
+  const includePresets = options?.includePresets !== false;
+  const includeReferences = options?.includeReferences !== false;
+
   for (const groupState of generationMap.values()) {
-    if (groupState.prompt) {
+    if (includePrompts && groupState.prompt) {
       zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/prompt.txt`, `${groupState.prompt}\n`);
     }
-    if (groupState.presetName || groupState.presetId || groupState.presetDescription || groupState.presetUrl) {
+    if (includePresets && (groupState.presetName || groupState.presetId || groupState.presetDescription || groupState.presetUrl)) {
       zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/preset.txt`, buildPresetText(groupState));
     }
-    await exportReferenceImagesToZip(zip, cleanedPrefix, groupState, nativeDownloadCache);
-    zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/references.txt`, buildReferencesText(groupState));
+    if (includeReferences) {
+      await exportReferenceImagesToZip(zip, cleanedPrefix, groupState, nativeDownloadCache);
+      zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/references.txt`, buildReferencesText(groupState));
+    }
 
     const generationMeta = {
       runId,
@@ -618,14 +863,18 @@ async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, 
       title: groupState.title,
       taskId: groupState.taskId,
       taskUrl: groupState.taskUrl,
-      presetName: groupState.presetName || "",
-      presetId: groupState.presetId || "",
-      presetUrl: groupState.presetUrl || "",
-      presetDescription: groupState.presetDescription || "",
-      references: Array.from(groupState.referencesByKey.values()),
-      prompt: groupState.prompt,
       images: groupState.images
     };
+    if (includePrompts) generationMeta.prompt = groupState.prompt;
+    if (includePresets) {
+      generationMeta.presetName = groupState.presetName || "";
+      generationMeta.presetId = groupState.presetId || "";
+      generationMeta.presetUrl = groupState.presetUrl || "";
+      generationMeta.presetDescription = groupState.presetDescription || "";
+    }
+    if (includeReferences) {
+      generationMeta.references = Array.from(groupState.referencesByKey.values());
+    }
     zip.addTextFile(
       `${cleanedPrefix}/${groupState.folder}/metadata.json`,
       JSON.stringify(generationMeta, null, 2)
@@ -789,8 +1038,9 @@ function getGenerationGroup(item, index) {
   const titleRaw = String(item?.title || "").trim();
   const detailUrl = String(item?.detailUrl || "");
   const taskUrl = String(item?.taskUrl || "");
+  const genId = extractGenId(detailUrl);
   const groupKey = taskId || detailUrl || `untitled_${index}`;
-  const baseLabel = taskId || titleRaw || extractGenId(detailUrl) || `untitled_${index}`;
+  const baseLabel = taskId || titleRaw || genId || `untitled_${index}`;
   const shortLabel = truncateForPath(sanitizePathSegment(baseLabel), 80);
   const folder = shortLabel || `untitled_${index}`;
   return { groupKey, folder, title: titleRaw, taskId, taskUrl };

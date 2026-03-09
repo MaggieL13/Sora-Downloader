@@ -1,10 +1,19 @@
 # SORA Prompt + Image Downloader (Chrome Extension)
 
-Personal-use Chrome extension to scan the current page for generated images, then download:
+Personal-use Chrome extension that bulk-exports your SORA AI generations — images, prompts, presets, and reference images — into organized ZIP archives.
 
-- The image file (`item_0001.png`, etc.)
-- A matching JSON sidecar with prompt + metadata (`item_0001.json`)
-- Optional combined CSV (`prompts.csv`)
+## Features
+
+- **Auto-scroll scanning** — automatically scrolls through your SORA grid/list view to discover all generations, even 2000+ items
+- **Live enrichment** — fetches prompts, preset details, and references from the SORA API while scanning (no waiting until the end)
+- **Stall detection** — detects when SORA's lazy-loading stops and asks you to decide: "It's Done" or "Keep Scanning"
+- **Spinner awareness** — waits for SORA's loading spinner before declaring a stall
+- **Batched ZIP downloads** — splits large exports into manageable ZIP files (configurable batch size, default 300 items per ZIP)
+- **Parallel image fetching** — downloads 5 images concurrently for significantly faster exports
+- **Selective download mode** — overlay checkboxes on the SORA page to pick specific images
+- **Export curation** — toggle inclusion of prompts, presets, and reference images
+- **Organized folder structure** — each generation gets a numbered folder with its images, prompt, preset, metadata, and references
+- **Pause / Cancel** — responsive controls during both scanning and downloading
 
 ## Install (Developer Mode)
 
@@ -13,52 +22,70 @@ Personal-use Chrome extension to scan the current page for generated images, the
 3. Click **Load unpacked**.
 4. Select this folder: `sora-downloader-extension`.
 
-## Use
+## Usage
 
-1. Open your SORA generations/history page.
-2. Click the extension icon.
-3. Scroll to load as many items as you want on screen.
-4. Click **Scan Page**.
-5. Set run options:
-   - `Download mode`: `Safe` (recommended) or `Fast`
-   - `Max items per run`
-   - `Skip already downloaded` for resume behavior
-   - `Organize by generation folders` to group pairs/singles together
-   - `Export single ZIP file` to avoid many separate downloads
-   - `Prefer PNG output` to convert WEBP/JPEG to PNG when possible
-6. Optionally change folder prefix or disable CSV/manifest export.
-7. Click **Download All**.
-8. If needed, click **Retry Failed Only**.
+1. Navigate to your SORA generations page (grid or list view).
+2. Click the extension icon — a detached popup window opens (stays open even if you click away).
+3. Click **Scan Page** — the extension auto-scrolls and scans for generations.
+   - Live enrichment fetches prompts, preset details, and references from the API as items are found.
+   - If the scan stalls (no new items after several scrolls), you'll be prompted to stop or continue.
+   - Use **Pause Scan** to temporarily halt scanning.
+4. Once scanning finishes, click **Download All**.
+5. ZIP files download automatically, one per batch.
 
-Files are saved into your default Chrome downloads folder under the selected prefix, such as:
+### Selective Mode
 
-- `SORA_EXPORT/<task_or_title>/img_01.webp`
-- `SORA_EXPORT/<task_or_title>/img_01.json`
-- `SORA_EXPORT/<task_or_title>/prompt.txt`
-- `SORA_EXPORT/<task_or_title>/metadata.json`
-- `SORA_EXPORT/prompts.csv`
+1. After scanning, switch to **Selective** mode.
+2. Checkboxes appear on each image on the SORA page.
+3. Check the images you want, then click **Download All** — only selected items are exported.
 
-If `Export single ZIP file` is enabled, you get one archive like:
+## Export Settings
 
-- `SORA_EXPORT/SORA_EXPORT_YYYYMMDD_HHMMSS.zip`
+| Setting | Description |
+|---------|-------------|
+| **Organize by generation folders** | Groups images by generation into numbered folders |
+| **Download mode** | `Safe` (more delay between requests) or `Fast` (quicker, more aggressive) |
+| **Batch size** | Items per ZIP file (50–1000, default 300) |
+| **Folder prefix** | Root folder name inside ZIPs (default: `SORA_EXPORT`) |
+| **Include Prompts** | Export `prompt.txt` per generation |
+| **Include Presets** | Export `preset.txt` per generation |
+| **Include References** | Export reference/inpaint images per generation |
+
+## Output Structure
+
+When organized by generation, each batch ZIP extracts to:
+
+```
+SORA_EXPORT/
+  0001_task_or_gen_id/
+    img_0001.png
+    prompt.txt
+    preset.txt
+    references.txt
+    metadata.json
+  0002_another_generation/
+    img_0002.png
+    prompt.txt
+    metadata.json
+  ...
+```
+
+Folders are numbered sequentially across batches, so extracting all ZIPs to the same location merges cleanly with no collisions.
+
+## Architecture
+
+- **popup.html / popup.js / popup.css** — Detached window UI with scan/download controls and settings
+- **content.js** — Injected into SORA pages; handles DOM scanning, auto-scrolling, scroll container detection, and selection mode overlays
+- **downloader.js** — Download engine with API enrichment, parallel image fetching, ZIP building, and batch management
+- **background.js** — Minimal service worker that opens/focuses the popup window
+
+The popup runs as a detached Chrome window (`chrome.windows.create`), giving it full DOM access and persistence. `downloader.js` and `popup.js` share the same window context, communicating via `CustomEvent` for progress updates.
 
 ## Notes
 
-- Prompt extraction is tuned for SORA grid cards and nearby metadata blocks.
-- Grid view: the extension reads visible cards and prompt/title text in the same record block.
-- Detail view (`/g/gen_...`): the extension can scan that page too.
-- High-res behavior: it tries ranked image candidates (`srcset`, `currentSrc`, `src`) and falls back automatically if a URL fails.
-- Resume behavior: "Skip already downloaded" uses an internal key ledger in extension storage (`detailUrl`/`imageUrl` identity), so reruns can continue without reprocessing known items.
-- Manifest output: each run can write `manifest_YYYYMMDD_HHMMSS.json` with stats + failures.
-- If SORA UI changes, update selectors in `content.js`:
-  - `PROMPT_SELECTORS`
-  - `CARD_SELECTORS`
+- Auth uses a Bearer token fetched from SORA's session endpoint — no manual token entry needed.
+- Reference images (inpaint items) are resolved via the API since the grid DOM doesn't show them.
+- Preset details (name, description, URL) are fetched from `/backend/presets/{id}` — the grid DOM only shows the button label, not the full preset info.
+- The extension uses `unlimitedStorage` permission to avoid quota issues during large scans.
+- If SORA's UI changes, update selectors in `content.js` (`PROMPT_SELECTORS`, `CARD_SELECTORS`).
 - This extension is for your own account/content and should be used in line with platform terms.
-
-## Recommended Backup Strategy
-
-1. Keep `Auto-scroll while scanning` enabled.
-2. Use `Safe` mode and run in chunks (for example `200-500` items per run).
-3. Leave `Skip already downloaded` on.
-4. Run `Retry Failed Only` after each chunk.
-5. Repeat until no new items are found.

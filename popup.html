@@ -26,9 +26,19 @@
           <input id="autoScrollToggle" type="checkbox" checked />
           <span>Auto-scroll while scanning (infinite grid)</span>
         </label>
+        <div class="download-mode-toggle">
+          <button id="fullModeBtn" class="mode-btn active">Full Download</button>
+          <button id="selectiveModeBtn" class="mode-btn">Selective</button>
+        </div>
+        <div id="selectionControls" class="controls selection-controls" style="display:none;">
+          <button id="selectAllBtn">Select All</button>
+          <button id="deselectAllBtn">Deselect All</button>
+          <span id="selectionCount" class="selection-count">0 selected</span>
+        </div>
         <div class="controls">
           <button id="clearCacheBtn">Clear Scan Cache</button>
           <button id="downloadBtn" class="primary">Download All</button>
+          <button id="cancelDownloadBtn" class="danger" style="display:none;">Cancel</button>
         </div>
       </section>
 
@@ -56,14 +66,28 @@
           </label>
 
           <label class="option">
-            Max items per run
-            <input id="maxItems" type="number" min="1" step="1" value="300" />
-            <span class="fieldhint">Caps how many scanned items run in one export. Example: 2,000 found + 300 max = about 7 runs.</span>
+            Batch size (items per ZIP)
+            <input id="batchSize" type="number" min="50" max="1000" step="50" value="300" />
+            <span class="fieldhint">Each batch produces one ZIP. Lower = less memory usage.</span>
           </label>
 
           <label class="option">
             Folder prefix
             <input id="folderPrefix" type="text" value="SORA_EXPORT" />
+          </label>
+
+          <p class="subhint" style="margin-top:10px; margin-bottom:4px;">Include in export:</p>
+          <label class="option checkbox">
+            <input id="includePromptsToggle" type="checkbox" checked />
+            <span>Prompts (prompt.txt)</span>
+          </label>
+          <label class="option checkbox">
+            <input id="includePresetsToggle" type="checkbox" checked />
+            <span>Presets (preset.txt)</span>
+          </label>
+          <label class="option checkbox">
+            <input id="includeReferencesToggle" type="checkbox" checked />
+            <span>Reference images</span>
           </label>
         </div>
       </section>
@@ -77,6 +101,22 @@
           <span id="statusSpinner" class="status-spinner" aria-hidden="true"></span>
           <span id="statusState" class="status-state">Idle</span>
           <div id="status" class="status">Not scanned yet.</div>
+        </div>
+        <div id="scanStallPrompt" class="stall-prompt" style="display:none;">
+          <p class="stall-msg">Scan appears stuck — no new items found after several scroll attempts.</p>
+          <div class="controls">
+            <button id="stallDoneBtn" class="primary">It's Done</button>
+            <button id="stallContinueBtn">Keep Scanning</button>
+          </div>
+        </div>
+        <div id="batchProgressWrap" class="batch-progress-wrap" style="display:none;">
+          <div class="batch-progress-label">
+            <span id="batchProgressText">Batch 1/1</span>
+            <span id="batchProgressPercent">0%</span>
+          </div>
+          <div class="batch-progress-bar">
+            <div id="batchProgressFill" class="batch-progress-fill"></div>
+          </div>
         </div>
         <ol id="itemsList"></ol>
       </section>

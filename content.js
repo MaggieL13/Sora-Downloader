@@ -2,7 +2,11 @@
   const accumulatedItemsByKey = new Map();
   let scanPaused = false;
   let scanCanceled = false;
+  let resetStagnant = false;
   const HIGHLIGHT_STYLE_ID = "sora-downloader-scan-highlight-style";
+  const SELECTION_STYLE_ID = "sora-downloader-selection-style";
+  const selectedItemKeys = new Set();
+  let selectionModeActive = false;
   const PROMPT_SELECTORS = [
     'div.truncate.text-token-text-primary',
     '[class*="text-token-text-primary"]',
@@ -49,11 +53,59 @@
       return;
     }
 
+    if (message.type === "SORA_CONTINUE_PAST_STALL") {
+      resetStagnant = true;
+      scanPaused = false;
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message.type === "SORA_GET_SCAN_SNAPSHOT") {
       sendResponse({
         ok: true,
         items: Array.from(accumulatedItemsByKey.values())
       });
+      return;
+    }
+
+    if (message.type === "SORA_ENTER_SELECTION_MODE") {
+      selectionModeActive = true;
+      ensureSelectionStyle();
+      addSelectionCheckboxes(message.keys || []);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message.type === "SORA_EXIT_SELECTION_MODE") {
+      selectionModeActive = false;
+      removeSelectionCheckboxes();
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message.type === "SORA_GET_SELECTED_ITEMS") {
+      sendResponse({ ok: true, keys: Array.from(selectedItemKeys) });
+      return;
+    }
+
+    if (message.type === "SORA_SELECT_ALL") {
+      document.querySelectorAll(".sora-dl-select-checkbox").forEach((cb) => {
+        cb.checked = true;
+        const key = cb.dataset.soraDlKey;
+        if (key) selectedItemKeys.add(key);
+      });
+      updateSelectionBadges();
+      sendResponse({ ok: true, count: selectedItemKeys.size });
+      return;
+    }
+
+    if (message.type === "SORA_DESELECT_ALL") {
+      document.querySelectorAll(".sora-dl-select-checkbox").forEach((cb) => {
+        cb.checked = false;
+      });
+      selectedItemKeys.clear();
+      updateSelectionBadges();
+      sendResponse({ ok: true, count: 0 });
       return;
     }
 
@@ -147,6 +199,59 @@
     return items;
   }
 
+  /**
+   * Find the actual scrollable container. SORA's explore/grid view often uses
+   * an inner scrollable div rather than the window/document scroll.
+   */
+  function findScrollContainer() {
+    // Common SORA scroll container selectors
+    const candidates = [
+      'main',
+      '[role="main"]',
+      'div.overflow-y-auto',
+      'div.overflow-auto',
+      'div[class*="overflow-y"]',
+      'div[class*="overflow-auto"]'
+    ];
+    for (const sel of candidates) {
+      const els = document.querySelectorAll(sel);
+      for (const el of els) {
+        // Must be significantly tall and actually scrollable
+        if (el.scrollHeight > el.clientHeight + 50 && el.clientHeight > 200) {
+          const style = getComputedStyle(el);
+          const overflow = style.overflowY || style.overflow;
+          if (overflow === "auto" || overflow === "scroll") {
+            return el;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function getScrollInfo(container) {
+    if (container) {
+      return {
+        scrollY: container.scrollTop,
+        viewportHeight: container.clientHeight,
+        scrollHeight: container.scrollHeight
+      };
+    }
+    return {
+      scrollY: window.scrollY,
+      viewportHeight: window.innerHeight,
+      scrollHeight: document.documentElement.scrollHeight
+    };
+  }
+
+  function scrollDown(container, amount) {
+    if (container) {
+      container.scrollBy(0, amount);
+    } else {
+      window.scrollBy(0, amount);
+    }
+  }
+
   async function scanWithAutoScroll(options) {
     scanCanceled = false;
     const maxSteps = clampNumber(options.maxSteps, 1, 500, 90);
@@ -158,12 +263,35 @@
     let prevScrollY = -1;
     let totalSteps = 0;
 
+    // Detect the scroll container (inner div or window)
+    const scrollContainer = findScrollContainer();
+
     const byKey = new Map();
 
-    while (totalSteps < totalMaxSteps && stagnantRounds < stagnantLimit) {
+    while (totalSteps < totalMaxSteps) {
       if (scanCanceled) {
         break;
       }
+
+      // Check if we've hit the stagnant limit — pause and ask user
+      if (stagnantRounds >= stagnantLimit) {
+        scanPaused = true;
+        reportScanStalled({
+          found: byKey.size,
+          step: totalSteps,
+          maxSteps: totalMaxSteps,
+          scrollY: Math.round(getScrollInfo(scrollContainer).scrollY)
+        });
+        await waitWhilePaused();
+        if (scanCanceled) break;
+        // User chose "Keep Scanning" — reset stagnant counter
+        if (resetStagnant) {
+          resetStagnant = false;
+          stagnantRounds = 0;
+          currentSettleMs = baseSettleMs;
+        }
+      }
+
       await waitWhilePaused();
       const current = scanGenerationItems();
       for (const item of current) {
@@ -178,7 +306,8 @@
       }
 
       const beforeCount = byKey.size;
-      window.scrollBy(0, Math.floor(window.innerHeight * 0.9));
+      const scrollInfo = getScrollInfo(scrollContainer);
+      scrollDown(scrollContainer, Math.floor(scrollInfo.viewportHeight * 0.9));
       if (scanCanceled) {
         break;
       }
@@ -200,11 +329,17 @@
         }
       }
 
+      const afterScrollInfo = getScrollInfo(scrollContainer);
       const noGrowth = byKey.size === beforeCount;
-      const noMovement = Math.abs(window.scrollY - prevScrollY) < 2;
-      const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 20;
+      const noMovement = Math.abs(afterScrollInfo.scrollY - prevScrollY) < 2;
+      const nearBottom = afterScrollInfo.viewportHeight + afterScrollInfo.scrollY >= afterScrollInfo.scrollHeight - 20;
+      const soraIsLoading = isSoraLoading();
 
-      if (noGrowth && (noMovement || nearBottom)) {
+      if (soraIsLoading) {
+        // SORA's spinner is visible — content is still loading, don't count as stagnant
+        stagnantRounds = Math.max(0, stagnantRounds - 1);
+        currentSettleMs = Math.min(currentSettleMs + 200, 3000);
+      } else if (noGrowth && (noMovement || nearBottom)) {
         stagnantRounds += 1;
         // Adaptive settle: double the wait time each stagnant round (cap at 3000ms)
         currentSettleMs = Math.min(currentSettleMs * 2, 3000);
@@ -223,11 +358,11 @@
         found: byKey.size,
         stagnantRounds,
         stagnantLimit,
-        scrollY: Math.round(window.scrollY),
+        scrollY: Math.round(afterScrollInfo.scrollY),
         nearBottom
       });
 
-      prevScrollY = window.scrollY;
+      prevScrollY = afterScrollInfo.scrollY;
       totalSteps += 1;
     }
 
@@ -682,10 +817,10 @@
     if (isThumbUrl(imageUrl)) return true;
     if (hasTinyThumbContainer(img)) return true;
     const link = img.closest("a");
-    if (link && extractMediaIdFromText(link.getAttribute("href") || link.href || "")) return true;
-    const cls = String(img.className || "");
-    if (/\bobject-cover\b/.test(cls) && String(img.alt || "").length) {
-      return true;
+    if (link) {
+      const href = link.getAttribute("href") || link.href || "";
+      // Only treat as reference if it links to a media_ upload (not gen_ detail links)
+      if (extractMediaIdFromText(href) && !href.includes("/g/gen_")) return true;
     }
     return false;
   }
@@ -879,8 +1014,27 @@
     }
   }
 
+  function isSoraLoading() {
+    const spinner = document.querySelector('.spin_loader');
+    if (!spinner) return false;
+    // Check that the spinner is actually visible (not hidden/zero-size)
+    const rect = spinner.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    const style = getComputedStyle(spinner);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+    return true;
+  }
+
   function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    // Break long sleeps into 200ms chunks so pause/cancel is responsive
+    return new Promise(async (resolve) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        if (scanPaused || scanCanceled) break;
+        await new Promise((r) => setTimeout(r, Math.min(200, end - Date.now())));
+      }
+      resolve();
+    });
   }
 
   function clampNumber(value, min, max, fallback) {
@@ -948,9 +1102,162 @@
     }
   }
 
+  function reportScanStalled(info) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "SORA_SCAN_STALLED",
+        info
+      });
+    } catch {
+      // Best-effort; if popup is closed, scan stays paused until cancelled.
+    }
+  }
+
   async function waitWhilePaused() {
     while (scanPaused && !scanCanceled) {
-      await sleep(200);
+      // Use raw setTimeout instead of sleep() — sleep() breaks immediately
+      // when scanPaused is true, which would create a tight CPU loop here.
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  // ── Selection mode ──
+
+  function ensureSelectionStyle() {
+    if (document.getElementById(SELECTION_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = SELECTION_STYLE_ID;
+    style.textContent = `
+      .sora-dl-select-wrap {
+        position: absolute;
+        left: 4px;
+        top: 4px;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        pointer-events: auto;
+      }
+      .sora-dl-select-checkbox {
+        appearance: auto;
+        width: 18px;
+        height: 18px;
+        accent-color: #a175ff;
+        cursor: pointer;
+        filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));
+      }
+      .sora-dl-selected {
+        outline: 3px solid #a175ff !important;
+        outline-offset: -3px;
+      }
+      .sora-dl-select-badge {
+        position: absolute;
+        right: 4px;
+        top: 4px;
+        z-index: 10;
+        background: rgba(161, 117, 255, 0.95);
+        color: #fff;
+        font-size: 9px;
+        line-height: 1;
+        padding: 3px 5px;
+        border-radius: 4px;
+        font-weight: 700;
+        pointer-events: none;
+      }
+    `;
+    document.documentElement.appendChild(style);
+  }
+
+  function addSelectionCheckboxes(keys) {
+    removeSelectionCheckboxes();
+    const scannedEls = document.querySelectorAll(".sora-downloader-scanned");
+    scannedEls.forEach((el) => {
+      const key = findKeyForElement(el, keys);
+      if (!key) return;
+      el.dataset.soraDlKey = key;
+
+      const wrap = document.createElement("div");
+      wrap.className = "sora-dl-select-wrap";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "sora-dl-select-checkbox";
+      cb.dataset.soraDlKey = key;
+      cb.checked = selectedItemKeys.has(key);
+
+      cb.addEventListener("change", (e) => {
+        e.stopPropagation();
+        if (cb.checked) {
+          selectedItemKeys.add(key);
+          el.classList.add("sora-dl-selected");
+        } else {
+          selectedItemKeys.delete(key);
+          el.classList.remove("sora-dl-selected");
+        }
+        updateSelectionBadges();
+        reportSelectionCount();
+      });
+
+      cb.addEventListener("click", (e) => {
+        e.stopPropagation();
+      });
+
+      wrap.appendChild(cb);
+      el.appendChild(wrap);
+
+      if (selectedItemKeys.has(key)) {
+        el.classList.add("sora-dl-selected");
+      }
+    });
+    updateSelectionBadges();
+  }
+
+  function removeSelectionCheckboxes() {
+    document.querySelectorAll(".sora-dl-select-wrap").forEach((el) => el.remove());
+    document.querySelectorAll(".sora-dl-select-badge").forEach((el) => el.remove());
+    document.querySelectorAll(".sora-dl-selected").forEach((el) => el.classList.remove("sora-dl-selected"));
+  }
+
+  function findKeyForElement(el, keys) {
+    const links = el.querySelectorAll('a[href*="/g/gen_"]');
+    for (const link of links) {
+      const href = link.getAttribute("href") || "";
+      const match = keys.find((k) => k && href.includes(k.replace(/^https?:\/\/[^/]+/, "")));
+      if (match) return match;
+    }
+    const imgs = el.querySelectorAll("img");
+    for (const img of imgs) {
+      const src = img.currentSrc || img.src || "";
+      const match = keys.find((k) => k === src);
+      if (match) return match;
+    }
+    if (keys.length) {
+      const allScanned = document.querySelectorAll(".sora-downloader-scanned");
+      const idx = Array.from(allScanned).indexOf(el);
+      if (idx >= 0 && idx < keys.length) return keys[idx];
+    }
+    return "";
+  }
+
+  function updateSelectionBadges() {
+    document.querySelectorAll(".sora-dl-select-badge").forEach((el) => el.remove());
+    if (!selectionModeActive) return;
+    document.querySelectorAll(".sora-downloader-scanned.sora-dl-selected").forEach((el) => {
+      const badge = document.createElement("div");
+      badge.className = "sora-dl-select-badge";
+      badge.textContent = "Selected";
+      el.appendChild(badge);
+    });
+  }
+
+  function reportSelectionCount() {
+    try {
+      chrome.runtime.sendMessage({
+        type: "SORA_SELECTION_COUNT",
+        count: selectedItemKeys.size
+      });
+    } catch {
+      // Best-effort.
     }
   }
 })();
