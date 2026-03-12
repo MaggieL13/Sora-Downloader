@@ -451,6 +451,11 @@ async function onClearCache() {
         // If cancel message fails, proceed with local reset anyway.
       }
     }
+    // Reset scan state immediately so the scan's finally block doesn't overwrite our clear
+    activeScanInProgress = false;
+    activeScanTabId = null;
+    scanPaused = false;
+    if (liveEnrichToken) liveEnrichToken.cancelled = true;
 
     currentItems = [];
     lastFailedItems = [];
