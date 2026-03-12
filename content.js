@@ -9,7 +9,6 @@
   const selectedItemsMap = new Map(); // key → full item object (scan-free selection)
   let selectionModeActive = false;
   let selectionObserver = null;
-  let lastCheckedKey = null;
   const PROMPT_SELECTORS = [
     'div.truncate.text-token-text-primary',
     '[class*="text-token-text-primary"]',
@@ -82,7 +81,6 @@
 
     if (message.type === "SORA_EXIT_SELECTION_MODE") {
       selectionModeActive = false;
-      lastCheckedKey = null;
       stopSelectionObserver();
       removeSelectionCheckboxes();
       sendResponse({ ok: true });
@@ -1241,7 +1239,6 @@
 
     cb.addEventListener("change", (e) => {
       e.stopPropagation();
-      lastCheckedKey = key;
       if (cb.checked) {
         selectedItemKeys.add(key);
         card.classList.add("sora-dl-selected");
@@ -1256,36 +1253,7 @@
       reportSelectionCount();
     });
 
-    cb.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (!e.shiftKey || !lastCheckedKey || lastCheckedKey === key) return;
-      e.preventDefault(); // block toggle + change event — we handle it manually
-      const allCbs = Array.from(document.querySelectorAll(".sora-dl-select-checkbox"));
-      const lastIdx = allCbs.findIndex((c) => c.dataset.soraDlKey === lastCheckedKey);
-      const currIdx = allCbs.findIndex((c) => c.dataset.soraDlKey === key);
-      if (lastIdx === -1 || currIdx === -1) return;
-      const setTo = allCbs[lastIdx].checked;
-      const [from, to] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx];
-      for (let i = from; i <= to; i++) {
-        const rangeCb = allCbs[i];
-        const rangeKey = rangeCb.dataset.soraDlKey;
-        if (!rangeKey) continue;
-        rangeCb.checked = setTo;
-        const rangeCard = rangeCb.closest("[data-sora-dl-card]");
-        if (setTo) {
-          selectedItemKeys.add(rangeKey);
-          if (rangeCard) rangeCard.classList.add("sora-dl-selected");
-          const item = extractItemFromCard(rangeCard);
-          if (item) selectedItemsMap.set(rangeKey, item);
-        } else {
-          selectedItemKeys.delete(rangeKey);
-          selectedItemsMap.delete(rangeKey);
-          if (rangeCard) rangeCard.classList.remove("sora-dl-selected");
-        }
-      }
-      updateSelectionBadges();
-      reportSelectionCount();
-    });
+    cb.addEventListener("click", (e) => e.stopPropagation());
 
     wrap.appendChild(cb);
     card.appendChild(wrap);
@@ -1336,6 +1304,13 @@
 
   function updateSelectionBadges() {
     document.querySelectorAll(".sora-dl-select-badge").forEach((el) => el.remove());
+    if (!selectionModeActive) return;
+    document.querySelectorAll("[data-sora-dl-card].sora-dl-selected").forEach((el) => {
+      const badge = document.createElement("div");
+      badge.className = "sora-dl-select-badge";
+      badge.textContent = "✓";
+      el.appendChild(badge);
+    });
   }
 
   function reportSelectionCount() {

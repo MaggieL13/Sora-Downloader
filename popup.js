@@ -47,7 +47,6 @@ let downloadCancelToken = null;
 let downloadMode = "full"; // "full" | "selective"
 let selectedKeys = new Set();
 let liveEnrichToken = null;
-let stallAbortResolve = null;
 
 // ── Scan progress from content script (arrives via chrome.runtime messaging) ──
 chrome.runtime.onMessage.addListener((message) => {
@@ -139,7 +138,6 @@ function setDownloadMode(mode) {
   }
 
   updateSelectionCount();
-  refreshControlState();
   persistState();
 }
 
@@ -211,23 +209,18 @@ async function onScan() {
     resetLiveEnrichState();
     liveEnrichToken = { cancelled: false };
     await sendMessageWithAutoInject(tab.id, { type: "SORA_CLEAR_SCAN_CACHE" });
-    stallAbortResolve = null;
-    const stallAbortPromise = new Promise(resolve => { stallAbortResolve = resolve; });
-    const response = await Promise.race([
-      sendMessageWithAutoInject(tab.id, {
-        type: autoScrollToggle.checked ? "SORA_SCAN_WITH_SCROLL" : "SORA_SCAN",
-        options: { maxSteps: 90, totalMaxSteps: 5000, settleMs: 350 }
-      }),
-      stallAbortPromise
-    ]);
-    stallAbortResolve = null;
+    const response = await sendMessageWithAutoInject(tab.id, {
+      type: autoScrollToggle.checked ? "SORA_SCAN_WITH_SCROLL" : "SORA_SCAN",
+      options: {
+        maxSteps: 90,
+        totalMaxSteps: 5000,
+        settleMs: 350
+      }
+    });
 
     if (!response || !response.ok) {
       throw new Error(response?.error || "Content script did not return data.");
     }
-
-    // If the scan was cancelled externally (e.g. clear cache) while we were awaiting, bail out.
-    if (!activeScanInProgress) return;
 
     // Stop live enrichment — full enrichment pass will handle any remaining
     if (liveEnrichToken) liveEnrichToken.cancelled = true;
@@ -298,37 +291,21 @@ async function onTogglePauseScan() {
 
 async function onStallDone() {
   scanStallPrompt.style.display = "none";
-  setStatus(`Scan stopping... please wait.`, { state: "scan", busy: true });
-
-  // Take a final snapshot to get ALL accumulated items from content.js before bailing.
-  let finalItems = currentItems;
   try {
-    if (typeof activeScanTabId === "number") {
-      const snap = await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_GET_SCAN_SNAPSHOT" });
-      if (snap?.ok && Array.isArray(snap.items) && snap.items.length > finalItems.length) {
-        finalItems = mergeSnapshotWithEnriched(currentItems, snap.items);
-      }
-    }
-  } catch {}
-
-  // Fire cancel in background — don't await.
-  if (typeof activeScanTabId === "number") {
-    sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CANCEL_SCAN" }).catch(() => {});
+    const tab = await getActiveTab();
+    await sendMessageWithAutoInject(tab.id, { type: "SORA_CANCEL_SCAN" });
+  } catch {
+    // If cancel fails, the scan will end naturally when the async response returns.
   }
-
-  if (stallAbortResolve) {
-    stallAbortResolve({ ok: true, items: finalItems });
-    stallAbortResolve = null;
-  }
+  setStatus(`Scan stopped by user. Processing ${currentItems.length} found items...`, { state: "scan", busy: true });
 }
 
 async function onStallContinue() {
   scanStallPrompt.style.display = "none";
   setStatus("Resuming scan...", { state: "scan", busy: true });
   try {
-    if (typeof activeScanTabId === "number") {
-      await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CONTINUE_PAST_STALL" });
-    }
+    const tab = await getActiveTab();
+    await sendMessageWithAutoInject(tab.id, { type: "SORA_CONTINUE_PAST_STALL" });
   } catch (error) {
     setStatus(`Resume failed: ${error.message}`, { state: "error", busy: false });
   }
@@ -742,7 +719,7 @@ function refreshControlState() {
   const paused = scanPaused;
   const scanBusy = scanning && !paused;
 
-  scanBtn.disabled = uiBusy || scanning || downloadMode === "selective";
+  scanBtn.disabled = uiBusy || scanning;
   pauseScanBtn.disabled = !scanning;
 
   clearCacheBtn.disabled = uiBusy && !scanning;
