@@ -232,6 +232,9 @@ async function downloadAllAsZipBatched(items, options) {
       zip.addTextFile(`${cleanedPrefix}/README.txt`, `No files were added to batch ${batchNum + 1}.\n`);
     }
 
+    const viewerHtml = await fetchViewerHtml();
+    if (viewerHtml) zip.addTextFile(`${cleanedPrefix}/viewer.html`, viewerHtml);
+
     const zipBytes = zip.finalize();
     emitDownloadProgress({ phase: "finalizing", mode: "zip", processed: overallProcessed, requested: items.length, completed: overallCompleted, failed: overallFailed, skipped: 0, message: `Writing ZIP${batchSuffix}...`, batchNumber: batchNum + 1, totalBatches });
     await downloadBlob(new Blob([zipBytes], { type: "application/zip" }), `${cleanedPrefix}/${cleanedPrefix}_${runId}${batchSuffix}.zip`);
@@ -345,6 +348,9 @@ async function downloadAllAsZip(items, options) {
       ].join("\n")
     );
   }
+
+  const viewerHtml = await fetchViewerHtml();
+  if (viewerHtml) zip.addTextFile(`${cleanedPrefix}/viewer.html`, viewerHtml);
 
   const zipBytes = zip.finalize();
   emitDownloadProgress({
@@ -1217,6 +1223,19 @@ function extensionToMime(ext) {
 
 function emitDownloadProgress(progress) {
   window.dispatchEvent(new CustomEvent("sora-download-progress", { detail: progress }));
+}
+
+let _viewerHtmlCache = null;
+async function fetchViewerHtml() {
+  if (_viewerHtmlCache) return _viewerHtmlCache;
+  try {
+    const url = chrome.runtime.getURL("viewer.html");
+    const resp = await fetch(url);
+    _viewerHtmlCache = await resp.text();
+  } catch {
+    _viewerHtmlCache = null;
+  }
+  return _viewerHtmlCache;
 }
 
 function sleep(ms) {
