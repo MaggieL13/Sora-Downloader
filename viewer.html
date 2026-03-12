@@ -1136,12 +1136,12 @@ function applyFilters() {
     if (sortOrder === 'newest') {
       const da = new Date(a.meta.generatedAt || 0).getTime();
       const db = new Date(b.meta.generatedAt || 0).getTime();
-      return db - da;
+      return da - db;
     }
     if (sortOrder === 'oldest') {
       const da = new Date(a.meta.generatedAt || 0).getTime();
       const db = new Date(b.meta.generatedAt || 0).getTime();
-      return da - db;
+      return db - da;
     }
     // index-based: pull first image index
     const ia = (a.meta.images && a.meta.images[0] ? a.meta.images[0].index : 0) || 0;
