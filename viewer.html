@@ -1437,13 +1437,6 @@ async function renderModal() {
         thumb.appendChild(img);
       }
 
-      // Click reference to open its URL
-      const openUrl = ref.mediaUrl || ref.thumbUrl || '';
-      if (openUrl) {
-        thumb.title = ref.alt || `Reference ${ref.genId || ref.mediaId || ''}`;
-        thumb.addEventListener('click', () => window.open(openUrl, '_blank', 'noopener'));
-      }
-
       grid.appendChild(thumb);
     }
 
