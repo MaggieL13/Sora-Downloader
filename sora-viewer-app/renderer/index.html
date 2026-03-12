@@ -1,0 +1,1649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SORA Viewer</title>
+<style>
+  :root {
+    --bg: #0d0d14;
+    --surface: #16161f;
+    --surface2: #1e1e2e;
+    --border: #2a2a3d;
+    --accent: #a175ff;
+    --accent-dim: rgba(161, 117, 255, 0.15);
+    --accent-glow: rgba(161, 117, 255, 0.35);
+    --text: #e8e8f0;
+    --text-muted: #7a7a99;
+    --danger: #ff6b6b;
+    --success: #69d98a;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --transition: 0.18s ease;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  /* ── Header ── */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(13, 13, 20, 0.92);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+  }
+
+  .header-top {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 0 10px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .logo-icon {
+    width: 32px;
+    height: 32px;
+    background: linear-gradient(135deg, #a175ff, #6e3bdc);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    box-shadow: 0 0 14px rgba(161, 117, 255, 0.4);
+  }
+
+  .logo-text {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    background: linear-gradient(90deg, #c4a8ff, #a175ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    white-space: nowrap;
+  }
+
+  .folder-path-display {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'Consolas', 'Courier New', monospace;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
+    min-width: 0;
+    display: none;
+  }
+
+  .search-wrap {
+    flex: 1;
+    max-width: 480px;
+    position: relative;
+  }
+
+  .search-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    pointer-events: none;
+    font-style: normal;
+  }
+
+  #searchInput {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 13px;
+    padding: 8px 12px 8px 36px;
+    outline: none;
+    transition: border-color var(--transition), box-shadow var(--transition);
+  }
+
+  #searchInput::placeholder { color: var(--text-muted); }
+  #searchInput:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+
+  .clear-search {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px;
+    display: none;
+    border-radius: 4px;
+    transition: color var(--transition);
+  }
+  .clear-search:hover { color: var(--text); }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    transition: all var(--transition);
+    white-space: nowrap;
+    text-decoration: none;
+    outline: none;
+  }
+
+  .btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .btn-primary {
+    background: linear-gradient(135deg, #a175ff, #7c4ddc);
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 2px 12px rgba(161, 117, 255, 0.3);
+  }
+
+  .btn-primary:hover {
+    background: linear-gradient(135deg, #b38aff, #8e5ff0);
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 4px 18px rgba(161, 117, 255, 0.5);
+    transform: translateY(-1px);
+  }
+
+  .btn-primary:active { transform: translateY(0); }
+
+  .btn.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ── Toolbar ── */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 0 10px;
+    flex-wrap: wrap;
+  }
+
+  .stats-bar {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-right: 8px;
+  }
+
+  .stats-bar strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .divider {
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+    margin: 0 4px;
+  }
+
+  .filter-group {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 12px;
+    padding: 6px 10px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color var(--transition);
+    appearance: none;
+    padding-right: 28px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%237a7a99' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+  }
+
+  select:focus { border-color: var(--accent); }
+  select option { background: var(--surface2); }
+
+  /* ── Main ── */
+  main {
+    padding: 24px;
+    min-height: calc(100vh - 120px);
+  }
+
+  /* ── Auto-detect banner ── */
+  #autoDetectBanner {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 500;
+    background: rgba(13, 13, 20, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.15s ease;
+  }
+
+  #autoDetectBanner.open { display: flex; }
+
+  .autodetect-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px 36px;
+    max-width: 480px;
+    width: 90%;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(161,117,255,0.1);
+    animation: slideUp 0.18s ease;
+  }
+
+  .autodetect-icon {
+    font-size: 42px;
+    filter: drop-shadow(0 0 16px rgba(161,117,255,0.5));
+  }
+
+  .autodetect-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .autodetect-path {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    color: var(--accent);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
+    word-break: break-all;
+    width: 100%;
+  }
+
+  .autodetect-sub {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .autodetect-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 4px;
+  }
+
+  /* ── Landing ── */
+  #landing {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 200px);
+    text-align: center;
+    gap: 28px;
+  }
+
+  .landing-icon {
+    font-size: 64px;
+    line-height: 1;
+    filter: drop-shadow(0 0 24px rgba(161, 117, 255, 0.5));
+    animation: float 3s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+
+  .landing-title {
+    font-size: 28px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #c4a8ff, #a175ff, #7c4ddc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .landing-sub {
+    color: var(--text-muted);
+    font-size: 15px;
+    max-width: 420px;
+    line-height: 1.7;
+  }
+
+  .landing-open-btn {
+    font-size: 15px;
+    padding: 12px 32px;
+  }
+
+  /* ── Progress ── */
+  #progressWrap {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 200px);
+    gap: 20px;
+  }
+
+  .progress-label {
+    font-size: 15px;
+    color: var(--text-muted);
+  }
+
+  .progress-label strong { color: var(--accent); }
+
+  .progress-bar-track {
+    width: 320px;
+    height: 4px;
+    background: var(--surface2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #7c4ddc, #a175ff);
+    border-radius: 2px;
+    transition: width 0.2s ease;
+    width: 0%;
+  }
+
+  /* ── Gallery ── */
+  #gallery { display: none; }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 320px;
+    gap: 12px;
+    color: var(--text-muted);
+  }
+
+  .empty-state-icon { font-size: 40px; opacity: 0.5; }
+  .empty-state-text { font-size: 15px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+  }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform var(--transition), border-color var(--transition), box-shadow var(--transition);
+    position: relative;
+    aspect-ratio: 1 / 1;
+  }
+
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: var(--accent);
+    box-shadow: 0 6px 28px var(--accent-glow), 0 0 0 1px rgba(161, 117, 255, 0.1);
+  }
+
+  .card img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    transition: transform 0.3s ease;
+  }
+
+  .card:hover img { transform: scale(1.03); }
+
+  .card-badges {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 4px;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 20px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .badge-ref {
+    background: rgba(161, 117, 255, 0.8);
+    color: #fff;
+  }
+
+  .badge-preset {
+    background: rgba(105, 217, 138, 0.75);
+    color: #0d0d14;
+  }
+
+  .card-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(to top, rgba(13, 13, 20, 0.96) 0%, rgba(13, 13, 20, 0.7) 50%, transparent 100%);
+    padding: 28px 12px 12px;
+    transform: translateY(100%);
+    transition: transform 0.22s ease;
+  }
+
+  .card:hover .card-overlay { transform: translateY(0); }
+
+  .card-prompt {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .card-prompt.no-prompt {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .card-index {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    color: rgba(232, 232, 240, 0.7);
+    background: rgba(13, 13, 20, 0.6);
+    backdrop-filter: blur(6px);
+    padding: 2px 7px;
+    border-radius: 20px;
+    letter-spacing: 0.04em;
+  }
+
+  .card-img-placeholder {
+    width: 100%;
+    height: 100%;
+    background: var(--surface2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 28px;
+  }
+
+  /* ── Modal ── */
+  #modalBackdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(13, 13, 20, 0.88);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    animation: fadeIn 0.15s ease;
+  }
+
+  #modalBackdrop.open { display: flex; }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(16px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    max-width: 920px;
+    width: 100%;
+    max-height: calc(100vh - 40px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    animation: slideUp 0.18s ease;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(161, 117, 255, 0.1);
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .modal-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .modal-counter {
+    font-size: 12px;
+    color: var(--text-muted);
+    min-width: 80px;
+    text-align: center;
+  }
+
+  .nav-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all var(--transition);
+    flex-shrink: 0;
+  }
+
+  .nav-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .nav-btn:disabled { opacity: 0.3; cursor: default; }
+
+  .close-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    transition: all var(--transition);
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .close-btn:hover {
+    color: var(--text);
+    border-color: var(--text-muted);
+    background: rgba(255,255,255,0.05);
+  }
+
+  .modal-body {
+    display: flex;
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .modal-image-pane {
+    flex: 1 1 55%;
+    background: #0a0a10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+    min-width: 0;
+  }
+
+  .modal-image-pane img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .modal-info {
+    flex: 0 0 340px;
+    overflow-y: auto;
+    padding: 20px;
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .info-section { display: flex; flex-direction: column; gap: 8px; }
+
+  .info-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+  }
+
+  .info-value {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.6;
+  }
+
+  .info-value.muted { color: var(--text-muted); font-style: italic; }
+
+  .prompt-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text);
+    max-height: 180px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .prompt-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    padding: 5px 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+
+  .copy-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .copy-btn.copied {
+    border-color: var(--success);
+    color: var(--success);
+    background: rgba(105, 217, 138, 0.1);
+  }
+
+  .preset-box {
+    background: var(--surface2);
+    border: 1px solid rgba(105, 217, 138, 0.25);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .preset-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--success);
+  }
+
+  .preset-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .refs-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .ref-thumb {
+    width: 64px;
+    height: 64px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    cursor: pointer;
+    transition: border-color var(--transition), transform var(--transition);
+    flex-shrink: 0;
+  }
+
+  .ref-thumb:hover {
+    border-color: var(--accent);
+    transform: scale(1.06);
+  }
+
+  .ref-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .ref-thumb-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    color: var(--text-muted);
+  }
+
+  .modal-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+    transition: opacity var(--transition);
+    word-break: break-all;
+  }
+
+  .modal-link:hover { opacity: 0.75; text-decoration: underline; }
+
+  .file-path-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .file-path-text {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'Consolas', 'Courier New', monospace;
+    word-break: break-all;
+    flex: 1;
+  }
+
+  /* ── Footer ── */
+  footer {
+    text-align: center;
+    padding: 20px 24px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+
+  footer span { color: var(--accent); }
+
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    .modal-body { flex-direction: column; }
+    .modal-info { flex: none; border-left: none; border-top: 1px solid var(--border); }
+    .modal-image-pane { min-height: 260px; }
+  }
+
+  @media (max-width: 520px) {
+    header { padding: 0 12px; }
+    main { padding: 16px 12px; }
+    .header-top { gap: 10px; }
+    .logo-text { display: none; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+    .folder-path-display { display: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Auto-detect banner overlay -->
+<div id="autoDetectBanner">
+  <div class="autodetect-card">
+    <div class="autodetect-icon">📁</div>
+    <div class="autodetect-title">SORA Export folder found!</div>
+    <div class="autodetect-path" id="autoDetectPath"></div>
+    <div class="autodetect-sub">Load this folder now?</div>
+    <div class="autodetect-actions">
+      <button class="btn btn-primary" id="autoDetectYes">Yes, load it</button>
+      <button class="btn" id="autoDetectNo">Browse manually</button>
+    </div>
+  </div>
+</div>
+
+<header>
+  <div class="header-top">
+    <div class="logo">
+      <div class="logo-icon">✦</div>
+      <span class="logo-text">SORA Viewer</span>
+    </div>
+
+    <div class="folder-path-display" id="folderPathDisplay" title=""></div>
+
+    <div class="search-wrap" id="searchWrap" style="display:none">
+      <i class="search-icon">⌕</i>
+      <input type="text" id="searchInput" placeholder="Search prompts…" autocomplete="off" spellcheck="false">
+      <button class="clear-search" id="clearSearch" title="Clear search">×</button>
+    </div>
+
+    <div class="header-actions">
+      <button class="btn btn-primary" id="openBtn">
+        <span>📂</span> Open Export Folder
+      </button>
+    </div>
+  </div>
+
+  <div class="toolbar" id="toolbar" style="display:none">
+    <span class="stats-bar" id="statsBar"></span>
+    <div class="divider"></div>
+    <div class="filter-group">
+      <button class="btn" id="filterRefs" title="Show only images with reference inputs">Has References</button>
+      <button class="btn" id="filterPreset" title="Show only images with a preset applied">Has Preset</button>
+    </div>
+    <div class="divider"></div>
+    <select id="sortSelect" title="Sort order">
+      <option value="newest">Newest first</option>
+      <option value="oldest">Oldest first</option>
+      <option value="index-asc">Index ↑</option>
+      <option value="index-desc">Index ↓</option>
+    </select>
+    <span style="margin-left:auto; font-size:12px; color:var(--text-muted)" id="resultCount"></span>
+  </div>
+</header>
+
+<main>
+  <!-- Landing -->
+  <div id="landing">
+    <div class="landing-icon">🎨</div>
+    <h1 class="landing-title">SORA Export Viewer</h1>
+    <p class="landing-sub">Browse and explore your SORA AI image exports as a native desktop app — full filesystem access, no browser needed.</p>
+    <button class="btn btn-primary landing-open-btn" id="openBtnLanding">
+      📂 &nbsp; Open Export Folder
+    </button>
+  </div>
+
+  <!-- Progress -->
+  <div id="progressWrap">
+    <div class="landing-icon" style="animation: float 1s ease-in-out infinite; font-size:40px">⏳</div>
+    <div class="progress-label" id="progressLabel">Scanning folder…</div>
+    <div class="progress-bar-track">
+      <div class="progress-bar-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+  <!-- Gallery -->
+  <div id="gallery">
+    <div id="emptyState" class="empty-state" style="display:none">
+      <div class="empty-state-icon">🔍</div>
+      <div class="empty-state-text">No images match your search or filters</div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+</main>
+
+<footer>
+  Made by <span>Maggie L.</span> 💜 &nbsp;·&nbsp; SORA Export Viewer
+</footer>
+
+<!-- Modal -->
+<div id="modalBackdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Image details">
+    <div class="modal-header">
+      <div class="modal-nav">
+        <button class="nav-btn" id="prevBtn" title="Previous (←)">‹</button>
+        <span class="modal-counter" id="modalCounter"></span>
+        <button class="nav-btn" id="nextBtn" title="Next (→)">›</button>
+      </div>
+      <button class="close-btn" id="closeBtn" title="Close (Esc)">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-image-pane" id="modalImagePane">
+        <img id="modalImg" src="" alt="">
+      </div>
+      <div class="modal-info" id="modalInfo"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── Electron API bridge ──────────────────────────────────────────────────────
+const api = window.electronAPI;
+
+// ─── State ───────────────────────────────────────────────────────────────────
+let allItems    = [];   // [{meta, imgSrc, imageFile, folderPath}]
+let filtered    = [];   // current filtered + sorted view
+let currentIndex = -1;
+let rootFolderPath = null;
+
+// Filters / search
+let searchQuery  = '';
+let filterRefs   = false;
+let filterPreset = false;
+let sortOrder    = 'newest';
+
+// ─── DOM refs ────────────────────────────────────────────────────────────────
+const $autoDetectBanner = document.getElementById('autoDetectBanner');
+const $autoDetectPath   = document.getElementById('autoDetectPath');
+const $autoDetectYes    = document.getElementById('autoDetectYes');
+const $autoDetectNo     = document.getElementById('autoDetectNo');
+
+const $landing        = document.getElementById('landing');
+const $progressWrap   = document.getElementById('progressWrap');
+const $progressLabel  = document.getElementById('progressLabel');
+const $progressFill   = document.getElementById('progressFill');
+const $gallery        = document.getElementById('gallery');
+const $grid           = document.getElementById('grid');
+const $emptyState     = document.getElementById('emptyState');
+const $statsBar       = document.getElementById('statsBar');
+const $resultCount    = document.getElementById('resultCount');
+const $toolbar        = document.getElementById('toolbar');
+const $searchWrap     = document.getElementById('searchWrap');
+const $searchInput    = document.getElementById('searchInput');
+const $clearSearch    = document.getElementById('clearSearch');
+const $filterRefs     = document.getElementById('filterRefs');
+const $filterPreset   = document.getElementById('filterPreset');
+const $sortSelect     = document.getElementById('sortSelect');
+const $modalBackdrop  = document.getElementById('modalBackdrop');
+const $modalImg       = document.getElementById('modalImg');
+const $modalInfo      = document.getElementById('modalInfo');
+const $modalCounter   = document.getElementById('modalCounter');
+const $prevBtn        = document.getElementById('prevBtn');
+const $nextBtn        = document.getElementById('nextBtn');
+const $closeBtn       = document.getElementById('closeBtn');
+const $modalImagePane = document.getElementById('modalImagePane');
+const $folderPathDisplay = document.getElementById('folderPathDisplay');
+
+// ─── Auto-detect on startup ──────────────────────────────────────────────────
+let pendingAutoDetectPath = null;
+
+async function runAutoDetect() {
+  try {
+    const found = await api.autoDetect();
+    if (found) {
+      pendingAutoDetectPath = found;
+      $autoDetectPath.textContent = found;
+      $autoDetectBanner.classList.add('open');
+    }
+  } catch (e) {
+    console.warn('Auto-detect failed:', e);
+  }
+}
+
+$autoDetectYes.addEventListener('click', async () => {
+  $autoDetectBanner.classList.remove('open');
+  if (pendingAutoDetectPath) {
+    await loadFolder(pendingAutoDetectPath);
+  }
+});
+
+$autoDetectNo.addEventListener('click', () => {
+  $autoDetectBanner.classList.remove('open');
+  pendingAutoDetectPath = null;
+});
+
+// ─── Open folder ─────────────────────────────────────────────────────────────
+async function openFolder() {
+  const chosen = await api.openFolder();
+  if (!chosen) return;
+  await loadFolder(chosen);
+}
+
+document.getElementById('openBtn').addEventListener('click', openFolder);
+document.getElementById('openBtnLanding').addEventListener('click', openFolder);
+
+// ─── Load folder ─────────────────────────────────────────────────────────────
+async function loadFolder(folderPath) {
+  rootFolderPath = folderPath;
+
+  // Show folder path in header
+  $folderPathDisplay.textContent = folderPath;
+  $folderPathDisplay.title = folderPath;
+  $folderPathDisplay.style.display = 'block';
+
+  // Show progress
+  $landing.style.display = 'none';
+  $gallery.style.display = 'none';
+  $progressWrap.style.display = 'flex';
+  $progressFill.style.width = '0%';
+  $progressLabel.textContent = 'Scanning folder…';
+
+  allItems = [];
+
+  // Collect subdirectories
+  let entries;
+  try {
+    entries = await api.readdir(folderPath);
+  } catch (e) {
+    console.error('Failed to read folder:', e);
+    $progressWrap.style.display = 'none';
+    $landing.style.display = 'flex';
+    return;
+  }
+
+  const subDirs = entries
+    .filter(e => e.isDirectory)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const total = subDirs.length;
+  let loaded = 0;
+
+  for (const dir of subDirs) {
+    loaded++;
+    const pct = total ? Math.round((loaded / total) * 100) : 0;
+    $progressFill.style.width = pct + '%';
+    $progressLabel.innerHTML = `Loading <strong>${loaded}</strong> / ${total}…`;
+
+    try {
+      const subPath = api.joinPath(folderPath, dir.name);
+      const items = await loadSubdir(folderPath, dir.name, subPath);
+      for (const item of items) allItems.push(item);
+    } catch (e) {
+      console.warn('Failed to load subdir', dir.name, e);
+    }
+  }
+
+  // Hide progress, show gallery
+  $progressWrap.style.display = 'none';
+  $gallery.style.display = 'block';
+  $toolbar.style.display = 'flex';
+  $searchWrap.style.display = 'block';
+
+  updateStats();
+  applyFilters();
+}
+
+// ─── Load a single subfolder ─────────────────────────────────────────────────
+async function loadSubdir(rootPath, subName, subPath) {
+  const metaPath = api.joinPath(subPath, 'metadata.json');
+
+  if (!await api.exists(metaPath)) return [];
+
+  let meta;
+  try {
+    const metaText = await api.readFile(metaPath);
+    meta = JSON.parse(metaText);
+  } catch {
+    return [];
+  }
+
+  const images = meta.images || [];
+  const items  = [];
+
+  for (const imgMeta of images) {
+    if (!imgMeta.file) continue;
+    const imgPath = api.joinPath(subPath, imgMeta.file);
+    if (!await api.exists(imgPath)) continue;
+    // Convert backslashes → forward slashes for the sora-file:// URL
+    const imgSrc = 'sora-file:///' + imgPath.replace(/\\/g, '/');
+    items.push({ meta, imgSrc, imageFile: imgMeta.file, folderPath: subPath });
+  }
+
+  // Fallback: scan for any image file when metadata has no images listed
+  if (items.length === 0) {
+    try {
+      const dirEntries = await api.readdir(subPath);
+      for (const e of dirEntries) {
+        if (!e.isDirectory && /\.(png|jpg|jpeg|webp|gif)$/i.test(e.name)) {
+          const imgPath = api.joinPath(subPath, e.name);
+          const imgSrc  = 'sora-file:///' + imgPath.replace(/\\/g, '/');
+          items.push({ meta, imgSrc, imageFile: e.name, folderPath: subPath });
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  return items;
+}
+
+// ─── Stats ───────────────────────────────────────────────────────────────────
+function updateStats() {
+  const total      = allItems.length;
+  const withPrompts = allItems.filter(i => i.meta.prompt && i.meta.prompt.trim()).length;
+  const withRefs    = allItems.filter(i => i.meta.references && i.meta.references.length > 0).length;
+
+  $statsBar.innerHTML =
+    `<strong>${total}</strong> image${total !== 1 ? 's' : ''} &nbsp;·&nbsp; ` +
+    `<strong>${withPrompts}</strong> with prompts &nbsp;·&nbsp; ` +
+    `<strong>${withRefs}</strong> with references`;
+}
+
+// ─── Filters + Sort ──────────────────────────────────────────────────────────
+function applyFilters() {
+  const q = searchQuery.toLowerCase().trim();
+
+  filtered = allItems.filter(item => {
+    const meta = item.meta;
+
+    if (filterRefs   && !(meta.references && meta.references.length > 0)) return false;
+    if (filterPreset && !(meta.presetName  || meta.presetId))             return false;
+
+    if (q) {
+      const prompt = (meta.prompt    || '').toLowerCase();
+      const title  = (meta.title     || '').toLowerCase();
+      const preset = (meta.presetName || '').toLowerCase();
+      if (!prompt.includes(q) && !title.includes(q) && !preset.includes(q)) return false;
+    }
+
+    return true;
+  });
+
+  // Sort
+  filtered.sort((a, b) => {
+    if (sortOrder === 'newest') {
+      const da = new Date(a.meta.generatedAt || 0).getTime();
+      const db = new Date(b.meta.generatedAt || 0).getTime();
+      return db - da;
+    }
+    if (sortOrder === 'oldest') {
+      const da = new Date(a.meta.generatedAt || 0).getTime();
+      const db = new Date(b.meta.generatedAt || 0).getTime();
+      return da - db;
+    }
+    // index-based
+    const ia = ((a.meta.images || []).find(i => i.file === a.imageFile) || a.meta.images?.[0])?.index ?? 0;
+    const ib = ((b.meta.images || []).find(i => i.file === b.imageFile) || b.meta.images?.[0])?.index ?? 0;
+    return sortOrder === 'index-asc' ? ia - ib : ib - ia;
+  });
+
+  renderGrid();
+}
+
+function renderGrid() {
+  const count = filtered.length;
+  $resultCount.textContent = count !== allItems.length
+    ? `${count} of ${allItems.length} shown`
+    : '';
+
+  if (count === 0) {
+    $emptyState.style.display = 'flex';
+    $grid.style.display = 'none';
+    return;
+  }
+
+  $emptyState.style.display = 'none';
+  $grid.style.display = 'grid';
+  $grid.innerHTML = '';
+
+  filtered.forEach((item, idx) => {
+    const card = buildCard(item, idx);
+    $grid.appendChild(card);
+  });
+}
+
+function buildCard(item, idx) {
+  const meta      = item.meta;
+  const prompt    = (meta.prompt || '').trim();
+  const hasRef    = meta.references && meta.references.length > 0;
+  const hasPreset = !!(meta.presetName || meta.presetId);
+  const imgEntry  = (meta.images || []).find(i => i.file === item.imageFile) || meta.images?.[0];
+  const imageIndex = imgEntry ? imgEntry.index : null;
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.tabIndex = 0;
+
+  if (item.imgSrc) {
+    const imgEl = document.createElement('img');
+    imgEl.src = item.imgSrc;
+    imgEl.alt = prompt ? prompt.slice(0, 120) : 'SORA generation';
+    imgEl.loading = 'lazy';
+    imgEl.decoding = 'async';
+    imgEl.onerror = () => {
+      imgEl.remove();
+      const ph = document.createElement('div');
+      ph.className = 'card-img-placeholder';
+      ph.textContent = '🖼';
+      card.prepend(ph);
+    };
+    card.appendChild(imgEl);
+  } else {
+    const ph = document.createElement('div');
+    ph.className = 'card-img-placeholder';
+    ph.textContent = '🖼';
+    card.appendChild(ph);
+  }
+
+  if (imageIndex !== null) {
+    const idxEl = document.createElement('div');
+    idxEl.className = 'card-index';
+    idxEl.textContent = `#${imageIndex}`;
+    card.appendChild(idxEl);
+  }
+
+  const badges = document.createElement('div');
+  badges.className = 'card-badges';
+  if (hasRef) {
+    const b = document.createElement('span');
+    b.className = 'badge badge-ref';
+    b.textContent = 'refs';
+    badges.appendChild(b);
+  }
+  if (hasPreset) {
+    const b = document.createElement('span');
+    b.className = 'badge badge-preset';
+    b.textContent = 'preset';
+    badges.appendChild(b);
+  }
+  if (badges.children.length) card.appendChild(badges);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'card-overlay';
+  const promptEl = document.createElement('div');
+  promptEl.className = 'card-prompt' + (prompt ? '' : ' no-prompt');
+  promptEl.textContent = prompt || 'No prompt';
+  overlay.appendChild(promptEl);
+  card.appendChild(overlay);
+
+  card.addEventListener('click', () => openModal(idx));
+  card.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModal(idx); }
+  });
+
+  return card;
+}
+
+// ─── Filter / search event listeners ────────────────────────────────────────
+$searchInput.addEventListener('input', () => {
+  searchQuery = $searchInput.value;
+  $clearSearch.style.display = searchQuery ? 'block' : 'none';
+  applyFilters();
+});
+
+$clearSearch.addEventListener('click', () => {
+  $searchInput.value = '';
+  searchQuery = '';
+  $clearSearch.style.display = 'none';
+  $searchInput.focus();
+  applyFilters();
+});
+
+$filterRefs.addEventListener('click', () => {
+  filterRefs = !filterRefs;
+  $filterRefs.classList.toggle('active', filterRefs);
+  applyFilters();
+});
+
+$filterPreset.addEventListener('click', () => {
+  filterPreset = !filterPreset;
+  $filterPreset.classList.toggle('active', filterPreset);
+  applyFilters();
+});
+
+$sortSelect.addEventListener('change', () => {
+  sortOrder = $sortSelect.value;
+  applyFilters();
+});
+
+// ─── Modal ───────────────────────────────────────────────────────────────────
+function openModal(idx) {
+  currentIndex = idx;
+  renderModal();
+  $modalBackdrop.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModal() {
+  $modalBackdrop.classList.remove('open');
+  document.body.style.overflow = '';
+  currentIndex = -1;
+}
+
+function navigateModal(delta) {
+  const next = currentIndex + delta;
+  if (next >= 0 && next < filtered.length) {
+    currentIndex = next;
+    renderModal();
+  }
+}
+
+function renderModal() {
+  const item = filtered[currentIndex];
+  if (!item) return;
+
+  const meta  = item.meta;
+  const count = filtered.length;
+
+  $modalCounter.textContent = `${currentIndex + 1} / ${count}`;
+  $prevBtn.disabled = currentIndex === 0;
+  $nextBtn.disabled = currentIndex === count - 1;
+
+  // Image
+  $modalImg.src = item.imgSrc || '';
+  $modalImg.alt = (meta.prompt || '').slice(0, 120);
+  $modalImg.onerror = () => { $modalImg.style.display = 'none'; };
+  $modalImg.style.display = '';
+
+  $modalImagePane.onclick = null;
+
+  // Build info panel
+  $modalInfo.innerHTML = '';
+
+  const prompt    = (meta.prompt || '').trim();
+  const hasPreset = !!(meta.presetName || meta.presetId);
+  const refs      = meta.references || [];
+
+  // ── Prompt section ────────────────────────────────────────────────────────
+  const promptSec = document.createElement('div');
+  promptSec.className = 'info-section';
+
+  const promptLabel = document.createElement('div');
+  promptLabel.className = 'info-label';
+  promptLabel.textContent = 'Prompt';
+  promptSec.appendChild(promptLabel);
+
+  if (prompt) {
+    const box = document.createElement('div');
+    box.className = 'prompt-box';
+    box.textContent = prompt;
+    promptSec.appendChild(box);
+
+    const actions  = document.createElement('div');
+    actions.className = 'prompt-actions';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.innerHTML = '📋 Copy prompt';
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(prompt).then(() => {
+        copyBtn.innerHTML = '✓ Copied!';
+        copyBtn.classList.add('copied');
+        setTimeout(() => {
+          copyBtn.innerHTML = '📋 Copy prompt';
+          copyBtn.classList.remove('copied');
+        }, 2000);
+      });
+    });
+    actions.appendChild(copyBtn);
+    promptSec.appendChild(actions);
+  } else {
+    const val = document.createElement('div');
+    val.className = 'info-value muted';
+    val.textContent = 'No prompt recorded';
+    promptSec.appendChild(val);
+  }
+  $modalInfo.appendChild(promptSec);
+
+  // ── Generation date ───────────────────────────────────────────────────────
+  if (meta.generatedAt) {
+    const sec = document.createElement('div');
+    sec.className = 'info-section';
+    const lbl = document.createElement('div');
+    lbl.className = 'info-label';
+    lbl.textContent = 'Generated';
+    sec.appendChild(lbl);
+    const val = document.createElement('div');
+    val.className = 'info-value';
+    try {
+      val.textContent = new Date(meta.generatedAt).toLocaleString();
+    } catch {
+      val.textContent = meta.generatedAt;
+    }
+    sec.appendChild(val);
+    $modalInfo.appendChild(sec);
+  }
+
+  // ── Preset section ────────────────────────────────────────────────────────
+  if (hasPreset) {
+    const sec = document.createElement('div');
+    sec.className = 'info-section';
+    const lbl = document.createElement('div');
+    lbl.className = 'info-label';
+    lbl.textContent = 'Preset';
+    sec.appendChild(lbl);
+
+    const box = document.createElement('div');
+    box.className = 'preset-box';
+
+    if (meta.presetName) {
+      const name = document.createElement('div');
+      name.className = 'preset-name';
+      name.textContent = meta.presetName;
+      box.appendChild(name);
+    }
+    if (meta.presetDescription) {
+      const desc = document.createElement('div');
+      desc.className = 'preset-desc';
+      desc.textContent = meta.presetDescription;
+      box.appendChild(desc);
+    }
+    if (meta.presetUrl) {
+      const link = document.createElement('a');
+      link.className = 'modal-link';
+      link.href = meta.presetUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = '↗ View preset';
+      box.appendChild(link);
+    }
+    sec.appendChild(box);
+    $modalInfo.appendChild(sec);
+  }
+
+  // ── References section ────────────────────────────────────────────────────
+  if (refs.length > 0) {
+    const sec = document.createElement('div');
+    sec.className = 'info-section';
+    const lbl = document.createElement('div');
+    lbl.className = 'info-label';
+    lbl.textContent = `References (${refs.length})`;
+    sec.appendChild(lbl);
+
+    const refsGrid = document.createElement('div');
+    refsGrid.className = 'refs-grid';
+
+    for (const ref of refs) {
+      const thumb = document.createElement('div');
+      thumb.className = 'ref-thumb';
+
+      // Try to resolve local image for this reference by looking for its genId in the export
+      let refImgSrc = null;
+
+      // Check if there's a local matching subfolder for a gen reference
+      if (rootFolderPath && ref.genId) {
+        try {
+          const shortId = ref.genId.replace(/^gen_/, '');
+          const rootEntries = await api.readdir(rootFolderPath);
+          for (const rEntry of rootEntries) {
+            if (rEntry.isDirectory && rEntry.name.includes(shortId)) {
+              const refSubPath = api.joinPath(rootFolderPath, rEntry.name);
+              const refEntries = await api.readdir(refSubPath);
+              for (const rFile of refEntries) {
+                if (!rFile.isDirectory && /\.(png|jpg|jpeg|webp)$/i.test(rFile.name)) {
+                  const rPath = api.joinPath(refSubPath, rFile.name);
+                  refImgSrc = 'sora-file:///' + rPath.replace(/\\/g, '/');
+                  break;
+                }
+              }
+              if (refImgSrc) break;
+            }
+          }
+        } catch {}
+      }
+
+      // Fall back to thumbUrl / mediaUrl from metadata
+      if (!refImgSrc) {
+        refImgSrc = ref.thumbUrl || ref.mediaUrl || null;
+      }
+
+      if (refImgSrc) {
+        const img = document.createElement('img');
+        img.alt = ref.alt || 'Reference';
+        img.src = refImgSrc;
+        img.onerror = () => {
+          thumb.innerHTML = '';
+          const ph = document.createElement('div');
+          ph.className = 'ref-thumb-placeholder';
+          ph.textContent = '🖼';
+          thumb.appendChild(ph);
+        };
+        thumb.appendChild(img);
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'ref-thumb-placeholder';
+        ph.textContent = '🖼';
+        thumb.appendChild(ph);
+      }
+
+      // Click to open URL in external browser
+      const openUrl = ref.mediaUrl || ref.thumbUrl || '';
+      if (openUrl) {
+        thumb.title = ref.alt || `Reference ${ref.genId || ref.mediaId || ''}`;
+        thumb.addEventListener('click', () => {
+          // In Electron, links with target=_blank open in a new window.
+          // Use the shell module via a hidden anchor approach is not available.
+          // Instead open it via window.open (Electron respects this).
+          window.open(openUrl, '_blank');
+        });
+      }
+
+      refsGrid.appendChild(thumb);
+    }
+
+    sec.appendChild(refsGrid);
+    $modalInfo.appendChild(sec);
+  }
+
+  // ── File location ─────────────────────────────────────────────────────────
+  const fullFilePath = item.folderPath + '\\' + item.imageFile;
+  const sec = document.createElement('div');
+  sec.className = 'info-section';
+
+  const lbl = document.createElement('div');
+  lbl.className = 'info-label';
+  lbl.textContent = 'File location';
+  sec.appendChild(lbl);
+
+  const row = document.createElement('div');
+  row.className = 'file-path-row';
+
+  const pathText = document.createElement('div');
+  pathText.className = 'file-path-text';
+  pathText.textContent = fullFilePath;
+  row.appendChild(pathText);
+
+  const copyPathBtn = document.createElement('button');
+  copyPathBtn.className = 'copy-btn';
+  copyPathBtn.style.flexShrink = '0';
+  copyPathBtn.innerHTML = '📋';
+  copyPathBtn.title = 'Copy path';
+  copyPathBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(fullFilePath).then(() => {
+      copyPathBtn.innerHTML = '✓';
+      copyPathBtn.classList.add('copied');
+      setTimeout(() => {
+        copyPathBtn.innerHTML = '📋';
+        copyPathBtn.classList.remove('copied');
+      }, 1500);
+    });
+  });
+  row.appendChild(copyPathBtn);
+
+  sec.appendChild(row);
+  $modalInfo.appendChild(sec);
+}
+
+// ─── Modal controls ──────────────────────────────────────────────────────────
+$closeBtn.addEventListener('click', closeModal);
+$prevBtn.addEventListener('click', () => navigateModal(-1));
+$nextBtn.addEventListener('click', () => navigateModal(1));
+
+$modalBackdrop.addEventListener('click', e => {
+  if (e.target === $modalBackdrop) closeModal();
+});
+
+document.addEventListener('keydown', e => {
+  if ($autoDetectBanner.classList.contains('open')) {
+    if (e.key === 'Escape') $autoDetectBanner.classList.remove('open');
+    return;
+  }
+  if (!$modalBackdrop.classList.contains('open')) return;
+  if (e.key === 'Escape')     closeModal();
+  if (e.key === 'ArrowLeft')  navigateModal(-1);
+  if (e.key === 'ArrowRight') navigateModal(1);
+});
+
+// ─── Boot ────────────────────────────────────────────────────────────────────
+runAutoDetect();
+</script>
+</body>
+</html>
