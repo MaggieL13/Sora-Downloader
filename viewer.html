@@ -621,22 +621,7 @@
     justify-content: center;
     overflow: hidden;
     position: relative;
-    cursor: pointer;
     min-width: 0;
-  }
-
-  .modal-image-pane:hover::after {
-    content: '↗ Open file';
-    position: absolute;
-    bottom: 12px;
-    right: 12px;
-    font-size: 11px;
-    color: rgba(232, 232, 240, 0.8);
-    background: rgba(13, 13, 20, 0.7);
-    backdrop-filter: blur(6px);
-    padding: 4px 10px;
-    border-radius: 20px;
-    pointer-events: none;
   }
 
   .modal-image-pane img {
@@ -1132,8 +1117,8 @@ function applyFilters() {
       return db - da;
     }
     // index-based: pull first image index
-    const ia = (a.meta.images && a.meta.images[0] ? a.meta.images[0].index : 0) || 0;
-    const ib = (b.meta.images && b.meta.images[0] ? b.meta.images[0].index : 0) || 0;
+    const ia = ((a.meta.images || []).find(i => i.file === a.imageFile) || a.meta.images?.[0])?.index || 0;
+    const ib = ((b.meta.images || []).find(i => i.file === b.imageFile) || b.meta.images?.[0])?.index || 0;
     return sortOrder === 'index-asc' ? ia - ib : ib - ia;
   });
 
@@ -1167,7 +1152,8 @@ function buildCard(item, idx) {
   const prompt = (meta.prompt || '').trim();
   const hasRef = meta.references && meta.references.length > 0;
   const hasPreset = !!(meta.presetName || meta.presetId);
-  const imageIndex = meta.images && meta.images[0] ? meta.images[0].index : null;
+  const imgEntry = (meta.images || []).find(i => i.file === item.imageFile) || meta.images?.[0];
+  const imageIndex = imgEntry ? imgEntry.index : null;
 
   const card = document.createElement('div');
   card.className = 'card';
