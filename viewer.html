@@ -1451,11 +1451,23 @@ async function renderModal() {
     const fname = item.imageFile || '';
     const rootName = rootHandle ? rootHandle.name : '';
     const fullPath = [rootName, meta.folder, fname].filter(Boolean).join('\\');
+
     const sec = document.createElement('div');
     sec.className = 'info-section';
+
+    const folderLbl = document.createElement('div');
+    folderLbl.className = 'info-label';
+    folderLbl.textContent = 'Folder';
+    sec.appendChild(folderLbl);
+    const folderVal = document.createElement('div');
+    folderVal.className = 'info-value';
+    folderVal.style.cssText = 'font-size:11px; color:var(--text-muted); font-family:monospace; word-break:break-all; margin-bottom:10px;';
+    folderVal.textContent = meta.folder;
+    sec.appendChild(folderVal);
+
     const lbl = document.createElement('div');
     lbl.className = 'info-label';
-    lbl.textContent = 'File location';
+    lbl.textContent = 'Location';
     sec.appendChild(lbl);
     const row = document.createElement('div');
     row.style.cssText = 'display:flex; align-items:flex-start; gap:8px;';
