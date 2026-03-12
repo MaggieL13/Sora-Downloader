@@ -6,7 +6,9 @@
   const HIGHLIGHT_STYLE_ID = "sora-downloader-scan-highlight-style";
   const SELECTION_STYLE_ID = "sora-downloader-selection-style";
   const selectedItemKeys = new Set();
+  const selectedItemsMap = new Map(); // key → full item object (scan-free selection)
   let selectionModeActive = false;
+  let selectionObserver = null;
   const PROMPT_SELECTORS = [
     'div.truncate.text-token-text-primary',
     '[class*="text-token-text-primary"]',
@@ -71,13 +73,15 @@
     if (message.type === "SORA_ENTER_SELECTION_MODE") {
       selectionModeActive = true;
       ensureSelectionStyle();
-      addSelectionCheckboxes(message.keys || []);
+      addSelectionCheckboxesToAllCards();
+      startSelectionObserver();
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "SORA_EXIT_SELECTION_MODE") {
       selectionModeActive = false;
+      stopSelectionObserver();
       removeSelectionCheckboxes();
       sendResponse({ ok: true });
       return;
@@ -88,11 +92,20 @@
       return;
     }
 
+    if (message.type === "SORA_GET_SELECTED_ITEM_DATA") {
+      sendResponse({ ok: true, items: Array.from(selectedItemsMap.values()) });
+      return;
+    }
+
     if (message.type === "SORA_SELECT_ALL") {
       document.querySelectorAll(".sora-dl-select-checkbox").forEach((cb) => {
         cb.checked = true;
         const key = cb.dataset.soraDlKey;
-        if (key) selectedItemKeys.add(key);
+        if (key) {
+          selectedItemKeys.add(key);
+          const item = extractItemFromCard(cb.closest("[data-sora-dl-card]") || cb.closest("li, article, figure, [class*='group/tile']"));
+          if (item) selectedItemsMap.set(key, item);
+        }
       });
       updateSelectionBadges();
       sendResponse({ ok: true, count: selectedItemKeys.size });
@@ -102,8 +115,11 @@
     if (message.type === "SORA_DESELECT_ALL") {
       document.querySelectorAll(".sora-dl-select-checkbox").forEach((cb) => {
         cb.checked = false;
+        const card = cb.closest("[data-sora-dl-card]") || cb.closest("li, article, figure, [class*='group/tile']");
+        if (card) card.classList.remove("sora-dl-selected");
       });
       selectedItemKeys.clear();
+      selectedItemsMap.clear();
       updateSelectionBadges();
       sendResponse({ ok: true, count: 0 });
       return;
@@ -1168,48 +1184,116 @@
     document.documentElement.appendChild(style);
   }
 
-  function addSelectionCheckboxes(keys) {
+  function extractItemFromCard(card) {
+    if (!card) return null;
+    const detailLink = card.querySelector('a[href*="/g/gen_"]');
+    const detailUrl = detailLink ? (detailLink.href || "") : "";
+    const img = card.querySelector("img");
+    const imageUrl = img ? (img.currentSrc || img.src || "") : "";
+    if (!detailUrl && !imageUrl) return null;
+    const key = detailUrl || imageUrl;
+    const inferredTaskId = extractTaskIdFromAssetUrl(imageUrl);
+    const taskLink = extractTaskLink(card, inferredTaskId);
+    return {
+      id: crypto.randomUUID(),
+      imageUrl,
+      imageCandidates: imageUrl ? [imageUrl] : [],
+      detailUrl,
+      taskUrl: taskLink,
+      taskId: inferredTaskId,
+      presetName: "",
+      presetId: "",
+      presetUrl: "",
+      presetDescription: "",
+      referenceImages: [],
+      referenceMediaIds: [],
+      referenceCount: 0,
+      title: "",
+      prompt: "Prompt not detected",
+      alt: img?.alt || "",
+      pageTitle: document.title || "",
+      pageUrl: location.href,
+      collectedAt: new Date().toISOString(),
+      _key: key
+    };
+  }
+
+  function addCheckboxToCard(card) {
+    if (!card || card.querySelector(".sora-dl-select-wrap")) return;
+    const detailLink = card.querySelector('a[href*="/g/gen_"]');
+    const img = card.querySelector("img");
+    const key = (detailLink?.href) || (img?.currentSrc || img?.src) || "";
+    if (!key) return;
+
+    card.style.position = card.style.position || "relative";
+    card.dataset.soraDlCard = "1";
+
+    const wrap = document.createElement("div");
+    wrap.className = "sora-dl-select-wrap";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "sora-dl-select-checkbox";
+    cb.dataset.soraDlKey = key;
+    cb.checked = selectedItemKeys.has(key);
+
+    cb.addEventListener("change", (e) => {
+      e.stopPropagation();
+      if (cb.checked) {
+        selectedItemKeys.add(key);
+        card.classList.add("sora-dl-selected");
+        const item = extractItemFromCard(card);
+        if (item) selectedItemsMap.set(key, item);
+      } else {
+        selectedItemKeys.delete(key);
+        selectedItemsMap.delete(key);
+        card.classList.remove("sora-dl-selected");
+      }
+      updateSelectionBadges();
+      reportSelectionCount();
+    });
+
+    cb.addEventListener("click", (e) => e.stopPropagation());
+
+    wrap.appendChild(cb);
+    card.appendChild(wrap);
+
+    if (selectedItemKeys.has(key)) {
+      card.classList.add("sora-dl-selected");
+    }
+  }
+
+  function addSelectionCheckboxesToAllCards() {
     removeSelectionCheckboxes();
-    const scannedEls = document.querySelectorAll(".sora-downloader-scanned");
-    scannedEls.forEach((el) => {
-      const key = findKeyForElement(el, keys);
-      if (!key) return;
-      el.dataset.soraDlKey = key;
-
-      const wrap = document.createElement("div");
-      wrap.className = "sora-dl-select-wrap";
-
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.className = "sora-dl-select-checkbox";
-      cb.dataset.soraDlKey = key;
-      cb.checked = selectedItemKeys.has(key);
-
-      cb.addEventListener("change", (e) => {
-        e.stopPropagation();
-        if (cb.checked) {
-          selectedItemKeys.add(key);
-          el.classList.add("sora-dl-selected");
-        } else {
-          selectedItemKeys.delete(key);
-          el.classList.remove("sora-dl-selected");
-        }
-        updateSelectionBadges();
-        reportSelectionCount();
-      });
-
-      cb.addEventListener("click", (e) => {
-        e.stopPropagation();
-      });
-
-      wrap.appendChild(cb);
-      el.appendChild(wrap);
-
-      if (selectedItemKeys.has(key)) {
-        el.classList.add("sora-dl-selected");
+    const cardSelector = CARD_SELECTORS.join(", ");
+    document.querySelectorAll(cardSelector).forEach((card) => {
+      if (card.querySelector('a[href*="/g/gen_"], img[src*="videos.openai.com"]')) {
+        addCheckboxToCard(card);
       }
     });
     updateSelectionBadges();
+  }
+
+  function startSelectionObserver() {
+    stopSelectionObserver();
+    selectionObserver = new MutationObserver(() => {
+      if (!selectionModeActive) return;
+      const cardSelector = CARD_SELECTORS.join(", ");
+      document.querySelectorAll(cardSelector).forEach((card) => {
+        if (!card.querySelector(".sora-dl-select-wrap") &&
+            card.querySelector('a[href*="/g/gen_"], img[src*="videos.openai.com"]')) {
+          addCheckboxToCard(card);
+        }
+      });
+    });
+    selectionObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function stopSelectionObserver() {
+    if (selectionObserver) {
+      selectionObserver.disconnect();
+      selectionObserver = null;
+    }
   }
 
   function removeSelectionCheckboxes() {
@@ -1218,34 +1302,13 @@
     document.querySelectorAll(".sora-dl-selected").forEach((el) => el.classList.remove("sora-dl-selected"));
   }
 
-  function findKeyForElement(el, keys) {
-    const links = el.querySelectorAll('a[href*="/g/gen_"]');
-    for (const link of links) {
-      const href = link.getAttribute("href") || "";
-      const match = keys.find((k) => k && href.includes(k.replace(/^https?:\/\/[^/]+/, "")));
-      if (match) return match;
-    }
-    const imgs = el.querySelectorAll("img");
-    for (const img of imgs) {
-      const src = img.currentSrc || img.src || "";
-      const match = keys.find((k) => k === src);
-      if (match) return match;
-    }
-    if (keys.length) {
-      const allScanned = document.querySelectorAll(".sora-downloader-scanned");
-      const idx = Array.from(allScanned).indexOf(el);
-      if (idx >= 0 && idx < keys.length) return keys[idx];
-    }
-    return "";
-  }
-
   function updateSelectionBadges() {
     document.querySelectorAll(".sora-dl-select-badge").forEach((el) => el.remove());
     if (!selectionModeActive) return;
-    document.querySelectorAll(".sora-downloader-scanned.sora-dl-selected").forEach((el) => {
+    document.querySelectorAll("[data-sora-dl-card].sora-dl-selected").forEach((el) => {
       const badge = document.createElement("div");
       badge.className = "sora-dl-select-badge";
-      badge.textContent = "Selected";
+      badge.textContent = "✓";
       el.appendChild(badge);
     });
   }

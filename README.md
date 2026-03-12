@@ -35,9 +35,10 @@ Personal-use Chrome extension that bulk-exports your SORA AI generations — ima
 
 ### Selective Mode
 
-1. After scanning, switch to **Selective** mode.
-2. Checkboxes appear on each image on the SORA page.
-3. Check the images you want, then click **Download All** — only selected items are exported.
+1. Switch to **Selective** mode — no scan needed.
+2. Checkboxes appear immediately on all visible image cards.
+3. Scroll through your generations and check what you want — new cards get checkboxes automatically as they load.
+4. Click **Download Selected** — the extension enriches and downloads only the checked items.
 
 ## Export Settings
 

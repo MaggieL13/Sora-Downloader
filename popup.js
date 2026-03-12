@@ -145,8 +145,7 @@ async function enterSelectionMode() {
   try {
     const tab = await getActiveTab();
     ensureTabIsScannable(tab);
-    const keys = currentItems.map((item) => item.detailUrl || item.imageUrl || "").filter(Boolean);
-    await sendMessageWithAutoInject(tab.id, { type: "SORA_ENTER_SELECTION_MODE", keys });
+    await sendMessageWithAutoInject(tab.id, { type: "SORA_ENTER_SELECTION_MODE" });
   } catch {
     // Selection mode is best-effort; items can still be downloaded in full mode.
   }
@@ -329,24 +328,25 @@ function getDownloadOptions() {
 }
 
 async function onDownloadAll() {
-  if (!currentItems.length) {
-    setStatus("Scan first. No items to download.", { state: "idle", busy: false });
-    return;
-  }
-
   let targetItems;
   if (downloadMode === "selective") {
-    // Sync selection from content script before downloading
-    await syncSelectionFromContentScript();
-    targetItems = currentItems.filter((item) => {
-      const key = item.detailUrl || item.imageUrl || "";
-      return key && selectedKeys.has(key);
-    });
+    // Get selected items directly from content script — no prior scan needed
+    try {
+      const tab = await getActiveTab();
+      const response = await sendMessageWithAutoInject(tab.id, { type: "SORA_GET_SELECTED_ITEM_DATA" });
+      targetItems = (response?.items || []);
+    } catch {
+      targetItems = [];
+    }
     if (!targetItems.length) {
-      setStatus("No items selected. Check images on the page first.", { state: "idle", busy: false });
+      setStatus("No items selected. Enable Selective mode and check images on the page first.", { state: "idle", busy: false });
       return;
     }
   } else {
+    if (!currentItems.length) {
+      setStatus("Scan first. No items to download.", { state: "idle", busy: false });
+      return;
+    }
     targetItems = currentItems;
   }
 
@@ -477,24 +477,8 @@ async function onClearCache() {
 
 // ── Rendering ──
 
-function renderItems(items) {
-  itemsList.innerHTML = "";
-
-  if (!items.length) {
-    const li = document.createElement("li");
-    li.textContent = "No items found yet.";
-    itemsList.appendChild(li);
-    return;
-  }
-
-  for (let i = 0; i < items.length; i += 1) {
-    const item = items[i];
-    const li = document.createElement("li");
-    const promptPreviewRaw = truncate(item.prompt || "Prompt not detected", 130);
-    const promptPreview = stripLeadingListMarker(promptPreviewRaw);
-    li.textContent = promptPreview;
-    itemsList.appendChild(li);
-  }
+function renderItems(_items) {
+  // Item list removed — count is shown in the status bar instead.
 }
 
 // ── Status ──
