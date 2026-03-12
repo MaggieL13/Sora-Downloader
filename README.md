@@ -120,4 +120,5 @@ Each folder is numbered so batches merge cleanly — just extract all ZIPs to th
 
 SORA promised a data export. It never came. The shutdown is in days.
 
-This was built to fill that gap — if you've spent months generating images on SORA, you deserve to keep them. ☁️➡️💾
+This was built to fill that gap — if you've spent months generating images on SORA, you deserve to keep them. 
+☁️➡️💾
