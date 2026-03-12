@@ -298,16 +298,28 @@ async function onTogglePauseScan() {
 
 async function onStallDone() {
   scanStallPrompt.style.display = "none";
-  // Fire cancel to content script in background — don't await it.
+  setStatus(`Scan stopping... please wait.`, { state: "scan", busy: true });
+
+  // Take a final snapshot to get ALL accumulated items from content.js before bailing.
+  let finalItems = currentItems;
+  try {
+    if (typeof activeScanTabId === "number") {
+      const snap = await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_GET_SCAN_SNAPSHOT" });
+      if (snap?.ok && Array.isArray(snap.items) && snap.items.length > finalItems.length) {
+        finalItems = mergeSnapshotWithEnriched(currentItems, snap.items);
+      }
+    }
+  } catch {}
+
+  // Fire cancel in background — don't await.
   if (typeof activeScanTabId === "number") {
     sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CANCEL_SCAN" }).catch(() => {});
   }
-  // Immediately unblock startScan with whatever items we already have from live snapshots.
+
   if (stallAbortResolve) {
-    stallAbortResolve({ ok: true, items: currentItems });
+    stallAbortResolve({ ok: true, items: finalItems });
     stallAbortResolve = null;
   }
-  setStatus(`Scan stopping... please wait.`, { state: "scan", busy: true });
 }
 
 async function onStallContinue() {
