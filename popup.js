@@ -138,6 +138,7 @@ function setDownloadMode(mode) {
   }
 
   updateSelectionCount();
+  refreshControlState();
   persistState();
 }
 
@@ -297,7 +298,7 @@ async function onStallDone() {
   } catch {
     // If cancel fails, the scan will end naturally when the async response returns.
   }
-  setStatus(`Scan stopped by user. Processing ${currentItems.length} found items...`, { state: "scan", busy: true });
+  setStatus(`Scan stopping... please wait.`, { state: "scan", busy: true });
 }
 
 async function onStallContinue() {
@@ -719,7 +720,7 @@ function refreshControlState() {
   const paused = scanPaused;
   const scanBusy = scanning && !paused;
 
-  scanBtn.disabled = uiBusy || scanning;
+  scanBtn.disabled = uiBusy || scanning || downloadMode === "selective";
   pauseScanBtn.disabled = !scanning;
 
   clearCacheBtn.disabled = uiBusy && !scanning;
