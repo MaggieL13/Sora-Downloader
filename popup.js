@@ -293,8 +293,9 @@ async function onTogglePauseScan() {
 async function onStallDone() {
   scanStallPrompt.style.display = "none";
   try {
-    const tab = await getActiveTab();
-    await sendMessageWithAutoInject(tab.id, { type: "SORA_CANCEL_SCAN" });
+    if (typeof activeScanTabId === "number") {
+      await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CANCEL_SCAN" });
+    }
   } catch {
     // If cancel fails, the scan will end naturally when the async response returns.
   }
@@ -305,8 +306,9 @@ async function onStallContinue() {
   scanStallPrompt.style.display = "none";
   setStatus("Resuming scan...", { state: "scan", busy: true });
   try {
-    const tab = await getActiveTab();
-    await sendMessageWithAutoInject(tab.id, { type: "SORA_CONTINUE_PAST_STALL" });
+    if (typeof activeScanTabId === "number") {
+      await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CONTINUE_PAST_STALL" });
+    }
   } catch (error) {
     setStatus(`Resume failed: ${error.message}`, { state: "error", busy: false });
   }
