@@ -47,6 +47,7 @@ let downloadCancelToken = null;
 let downloadMode = "full"; // "full" | "selective"
 let selectedKeys = new Set();
 let liveEnrichToken = null;
+let stallAbortResolve = null;
 
 // ── Scan progress from content script (arrives via chrome.runtime messaging) ──
 chrome.runtime.onMessage.addListener((message) => {
@@ -210,14 +211,16 @@ async function onScan() {
     resetLiveEnrichState();
     liveEnrichToken = { cancelled: false };
     await sendMessageWithAutoInject(tab.id, { type: "SORA_CLEAR_SCAN_CACHE" });
-    const response = await sendMessageWithAutoInject(tab.id, {
-      type: autoScrollToggle.checked ? "SORA_SCAN_WITH_SCROLL" : "SORA_SCAN",
-      options: {
-        maxSteps: 90,
-        totalMaxSteps: 5000,
-        settleMs: 350
-      }
-    });
+    stallAbortResolve = null;
+    const stallAbortPromise = new Promise(resolve => { stallAbortResolve = resolve; });
+    const response = await Promise.race([
+      sendMessageWithAutoInject(tab.id, {
+        type: autoScrollToggle.checked ? "SORA_SCAN_WITH_SCROLL" : "SORA_SCAN",
+        options: { maxSteps: 90, totalMaxSteps: 5000, settleMs: 350 }
+      }),
+      stallAbortPromise
+    ]);
+    stallAbortResolve = null;
 
     if (!response || !response.ok) {
       throw new Error(response?.error || "Content script did not return data.");
@@ -295,12 +298,14 @@ async function onTogglePauseScan() {
 
 async function onStallDone() {
   scanStallPrompt.style.display = "none";
-  try {
-    if (typeof activeScanTabId === "number") {
-      await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CANCEL_SCAN" });
-    }
-  } catch {
-    // If cancel fails, the scan will end naturally when the async response returns.
+  // Fire cancel to content script in background — don't await it.
+  if (typeof activeScanTabId === "number") {
+    sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CANCEL_SCAN" }).catch(() => {});
+  }
+  // Immediately unblock startScan with whatever items we already have from live snapshots.
+  if (stallAbortResolve) {
+    stallAbortResolve({ ok: true, items: currentItems });
+    stallAbortResolve = null;
   }
   setStatus(`Scan stopping... please wait.`, { state: "scan", busy: true });
 }
