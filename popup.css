@@ -133,6 +133,30 @@ h2 {
   line-height: 1.35;
 }
 
+.credit {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 10px 14px 14px;
+  position: relative;
+  z-index: 2;
+}
+
+.credit a {
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.credit-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
 .controls {
   display: flex;
   gap: 8px;
