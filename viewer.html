@@ -782,12 +782,6 @@
     color: var(--text-muted);
   }
 
-  .modal-links {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
   .modal-link {
     display: inline-flex;
     align-items: center;
@@ -1504,45 +1498,7 @@ async function renderModal() {
     $modalInfo.appendChild(sec);
   }
 
-  // Links
-  const detailUrl = meta.images && meta.images[0] && meta.images[0].detailUrl
-    ? meta.images[0].detailUrl
-    : null;
-  const taskUrl = meta.taskUrl || (meta.images && meta.images[0] && meta.images[0].taskUrl) || null;
 
-  if (detailUrl || taskUrl) {
-    const sec = document.createElement('div');
-    sec.className = 'info-section';
-    const lbl = document.createElement('div');
-    lbl.className = 'info-label';
-    lbl.textContent = 'Links';
-    sec.appendChild(lbl);
-
-    const links = document.createElement('div');
-    links.className = 'modal-links';
-
-    if (detailUrl) {
-      const a = document.createElement('a');
-      a.className = 'modal-link';
-      a.href = detailUrl;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      a.innerHTML = '✦ View generation on SORA';
-      links.appendChild(a);
-    }
-    if (taskUrl && taskUrl !== detailUrl) {
-      const a = document.createElement('a');
-      a.className = 'modal-link';
-      a.href = taskUrl;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      a.innerHTML = '↗ View task on SORA';
-      links.appendChild(a);
-    }
-
-    sec.appendChild(links);
-    $modalInfo.appendChild(sec);
-  }
 
   // Folder info
   if (meta.folder) {
