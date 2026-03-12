@@ -889,6 +889,8 @@
   Made by <span>Maggie L.</span> 💜 &nbsp;·&nbsp; SORA Export Viewer
 </footer>
 
+<input type="file" id="dirInput" webkitdirectory style="display:none">
+
 <!-- Modal -->
 <div id="modalBackdrop">
   <div class="modal" role="dialog" aria-modal="true" aria-label="Image details">
@@ -953,21 +955,27 @@ const $modalImagePane = document.getElementById('modalImagePane');
 // ─── Open folder ──────────────────────────────────────────────────────────────
 async function openFolder() {
   if (!('showDirectoryPicker' in window)) {
-    alert('Your browser does not support the File System Access API.\nPlease use Chrome 86+.');
+    document.getElementById('dirInput').click();
     return;
   }
   try {
     rootHandle = await window.showDirectoryPicker({ mode: 'read' });
+    await loadFolder(rootHandle);
   } catch (e) {
     if (e.name === 'AbortError') return;
-    console.error(e);
-    return;
+    // API exists but was blocked (e.g. Brave Shields) — fall back to file input
+    console.warn('showDirectoryPicker failed, falling back to file input:', e);
+    document.getElementById('dirInput').click();
   }
-  await loadFolder(rootHandle);
 }
 
 document.getElementById('openBtn').addEventListener('click', openFolder);
 document.getElementById('openBtnLanding').addEventListener('click', openFolder);
+
+document.getElementById('dirInput').addEventListener('change', async (e) => {
+  if (e.target.files.length) await loadFolderFromFiles(e.target.files);
+  e.target.value = '';
+});
 
 // ─── Load folder ──────────────────────────────────────────────────────────────
 async function loadFolder(handle) {
@@ -1011,6 +1019,90 @@ async function loadFolder(handle) {
   }
 
   // Hide progress, show gallery
+  $progressWrap.style.display = 'none';
+  $gallery.style.display = 'block';
+  $toolbar.style.display = 'flex';
+  $searchWrap.style.display = 'block';
+
+  updateStats();
+  applyFilters();
+}
+
+// ─── Load folder from <input webkitdirectory> (Firefox / Brave fallback) ───────
+async function loadFolderFromFiles(fileList) {
+  $landing.style.display = 'none';
+  $gallery.style.display = 'none';
+  $progressWrap.style.display = 'flex';
+  $progressFill.style.width = '0%';
+  $progressLabel.textContent = 'Scanning folder…';
+
+  for (const item of allItems) {
+    if (item.blobUrl) URL.revokeObjectURL(item.blobUrl);
+  }
+  allItems = [];
+  rootHandle = null;
+
+  const files = Array.from(fileList);
+
+  // Build path→File map for lookups
+  const fileMap = new Map();
+  for (const f of files) fileMap.set(f.webkitRelativePath, f);
+
+  const rootName = files[0]?.webkitRelativePath.split('/')[0] || '';
+  // Store for use in reference lookup + path display
+  window._fallbackFileMap = fileMap;
+  window._fallbackRootName = rootName;
+
+  // Group files by task subfolder (second path segment)
+  const subdirMap = new Map();
+  for (const f of files) {
+    const parts = f.webkitRelativePath.split('/');
+    if (parts.length < 2) continue;
+    const sub = parts[1];
+    if (!subdirMap.has(sub)) subdirMap.set(sub, []);
+    subdirMap.get(sub).push(f);
+  }
+
+  const subdirNames = [...subdirMap.keys()].sort();
+  let loaded = 0;
+  const total = subdirNames.length;
+
+  for (const subdirName of subdirNames) {
+    loaded++;
+    $progressFill.style.width = (total ? Math.round((loaded / total) * 100) : 0) + '%';
+    $progressLabel.innerHTML = `Loading <strong>${loaded}</strong> / ${total}…`;
+
+    const subdirFiles = subdirMap.get(subdirName);
+    const metaFile = subdirFiles.find(f => f.name === 'metadata.json');
+    if (!metaFile) continue;
+
+    let meta;
+    try { meta = JSON.parse(await metaFile.text()); } catch { continue; }
+
+    const images = meta.images || [];
+    const items = [];
+
+    for (const imgMeta of images) {
+      if (!imgMeta.file) continue;
+      const relPath = `${rootName}/${subdirName}/${imgMeta.file}`;
+      const imgFile = fileMap.get(relPath);
+      const blobUrl = imgFile ? URL.createObjectURL(imgFile) : null;
+      items.push({ meta, blobUrl, fileHandle: null, dirHandle: null, imageFile: imgMeta.file });
+    }
+
+    // Fallback: no images in metadata, grab any image in the subdir
+    if (items.length === 0) {
+      const imgFile = subdirFiles.find(f =>
+        /\.(png|jpg|jpeg|webp|gif)$/i.test(f.name) && !f.webkitRelativePath.includes('/references/')
+      );
+      if (imgFile) {
+        items.push({ meta, blobUrl: URL.createObjectURL(imgFile), fileHandle: null, dirHandle: null, imageFile: imgFile.name });
+      }
+    }
+
+    for (const item of items) allItems.push(item);
+  }
+
   $progressWrap.style.display = 'none';
   $gallery.style.display = 'block';
   $toolbar.style.display = 'flex';
@@ -1391,24 +1483,36 @@ async function renderModal() {
       if (item.dirHandle && (ref.genId || ref.mediaId)) {
         // Look in parent folder structure for matching subdir
         // We'll try a best-effort approach: check if the root handle has a subdir for genId
-        if (rootHandle && ref.genId) {
-          try {
-            // Look through all subdirs for one containing this genId
-            for await (const [dname, dentry] of rootHandle.entries()) {
-              if (dentry.kind === 'directory' && dname.includes(ref.genId.replace('gen_', ''))) {
-                // Try to find an image in it
-                for await (const [fname, fentry] of dentry.entries()) {
-                  if (fentry.kind === 'file' && /\.(png|jpg|jpeg|webp)$/i.test(fname)) {
-                    const f = await fentry.getFile();
-                    img.src = URL.createObjectURL(f);
-                    localLoaded = true;
-                    break;
+        if (ref.genId) {
+          if (rootHandle) {
+            try {
+              const genIdShort = ref.genId.replace('gen_', '');
+              for await (const [dname, dentry] of rootHandle.entries()) {
+                if (dentry.kind === 'directory' && dname.includes(genIdShort)) {
+                  for await (const [fname, fentry] of dentry.entries()) {
+                    if (fentry.kind === 'file' && /\.(png|jpg|jpeg|webp)$/i.test(fname)) {
+                      const f = await fentry.getFile();
+                      img.src = URL.createObjectURL(f);
+                      localLoaded = true;
+                      break;
+                    }
                   }
+                  if (localLoaded) break;
                 }
-                if (localLoaded) break;
+              }
+            } catch {}
+          } else if (window._fallbackFileMap) {
+            // Fallback mode: search the fileMap for a matching subdir
+            const genIdShort = ref.genId.replace('gen_', '');
+            for (const [relPath, file] of window._fallbackFileMap) {
+              const parts = relPath.split('/');
+              if (parts.length >= 3 && parts[1].includes(genIdShort) && /\.(png|jpg|jpeg|webp)$/i.test(parts[2])) {
+                img.src = URL.createObjectURL(file);
+                localLoaded = true;
+                break;
               }
             }
-          } catch {}
+          }
         }
       }
 
@@ -1449,7 +1553,7 @@ async function renderModal() {
   // File location
   if (meta.folder) {
     const fname = item.imageFile || '';
-    const rootName = rootHandle ? rootHandle.name : '';
+    const rootName = rootHandle ? rootHandle.name : (window._fallbackRootName || '');
     const fullPath = [rootName, meta.folder, fname].filter(Boolean).join('\\');
 
     const sec = document.createElement('div');
