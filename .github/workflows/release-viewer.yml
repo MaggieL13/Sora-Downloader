@@ -1,0 +1,25 @@
+name: Release Viewer
+
+on:
+  push:
+    branches: [main]
+    paths: [viewer.html]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload viewer.html to viewer-latest release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: viewer-latest
+          name: Viewer (latest)
+          prerelease: true
+          files: viewer.html
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -100,7 +100,7 @@ Every ZIP includes a `viewer.html` file. Open it in Chrome after extracting and 
 
 Already have your export? Download the standalone viewer and open it in Chrome — no re-download of your images needed:
 
-👉 [⬇️ Download viewer.html](https://github.com/MaggieL13/Sora-Downloader/raw/main/viewer.html?download=1)
+👉 [⬇️ Download viewer.html](https://github.com/MaggieL13/Sora-Downloader/releases/download/viewer-latest/viewer.html)
 
 Works with any existing SORA_EXPORT folder. Just open the file in Chrome, click "Open Export Folder" and pick it.
 
