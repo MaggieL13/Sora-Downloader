@@ -15,6 +15,7 @@
     "appId": "com.maggiel13.sora-viewer",
     "productName": "SORA Viewer",
     "directories": { "output": "dist" },
+    "asarUnpack": ["preload.js"],
     "win": {
       "target": [{ "target": "portable" }]
     },

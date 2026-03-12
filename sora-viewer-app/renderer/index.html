@@ -1062,9 +1062,14 @@ $autoDetectNo.addEventListener('click', () => {
 
 // ─── Open folder ─────────────────────────────────────────────────────────────
 async function openFolder() {
-  const chosen = await api.openFolder();
-  if (!chosen) return;
-  await loadFolder(chosen);
+  if (!api) { alert('ElectronAPI not available — please restart the app.'); return; }
+  try {
+    const chosen = await api.openFolder();
+    if (!chosen) return;
+    await loadFolder(chosen);
+  } catch (err) {
+    alert('Error opening folder: ' + err.message);
+  }
 }
 
 document.getElementById('openBtn').addEventListener('click', openFolder);

@@ -24,7 +24,9 @@ function createWindow() {
     autoHideMenuBar: true,
     title: 'SORA Viewer',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: app.isPackaged
+        ? path.join(process.resourcesPath, 'app.asar.unpacked', 'preload.js')
+        : path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
