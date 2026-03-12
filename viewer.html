@@ -795,19 +795,6 @@
 
   .modal-link:hover { opacity: 0.75; text-decoration: underline; }
 
-  .date-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--text-muted);
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 5px 10px;
-    width: fit-content;
-  }
-
   /* ── Footer ── */
   footer {
     text-align: center;
@@ -1306,35 +1293,14 @@ async function renderModal() {
   $modalImg.src = item.blobUrl || '';
   $modalImg.alt = (meta.prompt || '').slice(0, 120);
 
-  // Click image → open original via file handle (blob URL already is the file)
-  $modalImagePane.onclick = () => {
-    if (item.blobUrl) {
-      const a = document.createElement('a');
-      a.href = item.blobUrl;
-      const fname = (meta.images && meta.images[0] && meta.images[0].file) || 'image.png';
-      a.download = fname;
-      a.click();
-    }
-  };
+  $modalImagePane.onclick = null;
 
   // Build info panel
   $modalInfo.innerHTML = '';
 
   const prompt = (meta.prompt || '').trim();
-  const date   = meta.generatedAt ? formatDate(meta.generatedAt) : null;
   const hasPreset = !!(meta.presetName || meta.presetId);
   const refs   = meta.references || [];
-
-  // Date
-  if (date) {
-    const sec = document.createElement('div');
-    sec.className = 'info-section';
-    const badge = document.createElement('div');
-    badge.className = 'date-badge';
-    badge.innerHTML = `🕐 ${date}`;
-    sec.appendChild(badge);
-    $modalInfo.appendChild(sec);
-  }
 
   // Prompt
   const promptSec = document.createElement('div');
@@ -1500,18 +1466,21 @@ async function renderModal() {
 
 
 
-  // Folder info
+  // File location
   if (meta.folder) {
+    const fname = (meta.images && meta.images[0] && meta.images[0].file) || '';
+    const rootName = rootHandle ? rootHandle.name : '';
+    const fullPath = [rootName, meta.folder, fname].filter(Boolean).join(' / ');
     const sec = document.createElement('div');
     sec.className = 'info-section';
     const lbl = document.createElement('div');
     lbl.className = 'info-label';
-    lbl.textContent = 'Folder';
+    lbl.textContent = 'File location';
     sec.appendChild(lbl);
     const val = document.createElement('div');
     val.className = 'info-value';
     val.style.cssText = 'font-size:11px; color:var(--text-muted); font-family:monospace; word-break:break-all;';
-    val.textContent = meta.folder;
+    val.textContent = fullPath;
     sec.appendChild(val);
     $modalInfo.appendChild(sec);
   }
@@ -1534,16 +1503,6 @@ document.addEventListener('keydown', e => {
 });
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
-function formatDate(iso) {
-  try {
-    const d = new Date(iso);
-    if (isNaN(d)) return null;
-    return d.toLocaleString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit'
-    });
-  } catch { return null; }
-}
 </script>
 </body>
 </html>
