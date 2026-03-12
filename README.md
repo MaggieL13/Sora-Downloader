@@ -28,6 +28,7 @@ SORA uses virtualized scrolling, meaning your thousands of images are never all 
 - Selective mode — checkboxes appear directly on image cards, no scan needed first
 - Pause / Cancel during both scanning and downloading
 - Clean numbered folder structure — extract all ZIPs to one folder, no collisions
+- Built-in gallery viewer (`viewer.html`) bundled in every ZIP — searchable, filterable, works offline
 
 ---
 
@@ -88,6 +89,10 @@ SORA_EXPORT/
 ```
 
 Each folder is numbered so batches merge cleanly — just extract all ZIPs to the same location.
+
+### Viewing your exports
+
+Every ZIP includes a `viewer.html` file. Open it in Chrome after extracting and pick your export folder — you get a full searchable gallery of everything you downloaded, with prompts, presets, and reference images all visible.
 
 ---
 
