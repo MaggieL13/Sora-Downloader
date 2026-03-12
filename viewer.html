@@ -1018,8 +1018,8 @@ async function loadFolder(handle) {
     $progressLabel.innerHTML = `Loading <strong>${loaded}</strong> / ${total}…`;
 
     try {
-      const item = await loadSubdir(dirHandle);
-      if (item) allItems.push(item);
+      const items = await loadSubdir(dirHandle);
+      for (const item of items) allItems.push(item);
     } catch (e) {
       console.warn('Failed to load subdir', name, e);
     }
@@ -1053,37 +1053,38 @@ async function loadSubdir(dirHandle) {
     return null;
   }
 
-  // Find the primary image
-  let blobUrl = null;
-  let fileHandle = null;
   const images = meta.images || [];
-  const primaryImage = images[0];
+  const items = [];
 
-  if (primaryImage && primaryImage.file) {
+  for (const imgMeta of images) {
+    if (!imgMeta.file) continue;
+    let blobUrl = null;
+    let fileHandle = null;
     try {
-      fileHandle = await dirHandle.getFileHandle(primaryImage.file);
+      fileHandle = await dirHandle.getFileHandle(imgMeta.file);
       const imgFile = await fileHandle.getFile();
       blobUrl = URL.createObjectURL(imgFile);
     } catch {
       blobUrl = null;
     }
+    items.push({ meta, blobUrl, fileHandle, dirHandle, imageFile: imgMeta.file });
   }
 
-  // If no primary image found from metadata, try to find any .png
-  if (!blobUrl) {
+  // Fallback: no images in metadata, grab any image file
+  if (items.length === 0) {
     try {
       for await (const [fname, fentry] of dirHandle.entries()) {
         if (fentry.kind === 'file' && /\.(png|jpg|jpeg|webp|gif)$/i.test(fname)) {
-          fileHandle = fentry;
           const imgFile = await fentry.getFile();
-          blobUrl = URL.createObjectURL(imgFile);
+          const blobUrl = URL.createObjectURL(imgFile);
+          items.push({ meta, blobUrl, fileHandle: fentry, dirHandle, imageFile: fname });
           break;
         }
       }
     } catch {}
   }
 
-  return { meta, blobUrl, fileHandle, dirHandle };
+  return items;
 }
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
@@ -1468,7 +1469,7 @@ async function renderModal() {
 
   // File location
   if (meta.folder) {
-    const fname = (meta.images && meta.images[0] && meta.images[0].file) || '';
+    const fname = item.imageFile || '';
     const rootName = rootHandle ? rootHandle.name : '';
     const fullPath = [rootName, meta.folder, fname].filter(Boolean).join(' / ');
     const sec = document.createElement('div');
