@@ -35,12 +35,13 @@ SORA uses virtualized scrolling, meaning your thousands of images are never all 
 
 This is an unpacked Chrome extension (not on the Web Store). Here's how to install it:
 
-1. Download or clone this repo
-2. Open Chrome and go to `chrome://extensions`
-3. Enable **Developer mode** (toggle in the top right)
-4. Click **Load unpacked**
-5. Select the `sora-downloader-extension` folder
-6. The extension icon will appear in your toolbar
+1. **[⬇️ Click here to download the extension](https://github.com/MaggieL13/Sora-Downloader/archive/refs/heads/main.zip)** — saves a ZIP to your Downloads folder
+2. Unzip it — you'll get a folder called `Sora-Downloader-main`
+3. Open Chrome and go to `chrome://extensions`
+4. Enable **Developer mode** (toggle in the top right)
+5. Click **Load unpacked**
+6. Select the `sora-downloader-extension` folder inside the unzipped folder
+7. The extension icon will appear in your toolbar
 
 > **"Developer mode" sounds scary but it just means Chrome loads the extension from your local files instead of the store. Nothing sketchy — you can read every line of code right here.**
 
