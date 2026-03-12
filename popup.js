@@ -223,6 +223,9 @@ async function onScan() {
       throw new Error(response?.error || "Content script did not return data.");
     }
 
+    // If the scan was cancelled externally (e.g. clear cache) while we were awaiting, bail out.
+    if (!activeScanInProgress) return;
+
     // Stop live enrichment — full enrichment pass will handle any remaining
     if (liveEnrichToken) liveEnrichToken.cancelled = true;
 
