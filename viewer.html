@@ -529,7 +529,7 @@
     border-radius: 16px;
     max-width: 920px;
     width: 100%;
-    max-height: calc(100vh - 40px);
+    height: calc(100vh - 40px);
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -1457,18 +1457,31 @@ async function renderModal() {
   if (meta.folder) {
     const fname = item.imageFile || '';
     const rootName = rootHandle ? rootHandle.name : '';
-    const fullPath = [rootName, meta.folder, fname].filter(Boolean).join(' / ');
+    const fullPath = [rootName, meta.folder, fname].filter(Boolean).join('\\');
     const sec = document.createElement('div');
     sec.className = 'info-section';
     const lbl = document.createElement('div');
     lbl.className = 'info-label';
     lbl.textContent = 'File location';
     sec.appendChild(lbl);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:flex-start; gap:8px;';
     const val = document.createElement('div');
     val.className = 'info-value';
-    val.style.cssText = 'font-size:11px; color:var(--text-muted); font-family:monospace; word-break:break-all;';
+    val.style.cssText = 'font-size:11px; color:var(--text-muted); font-family:monospace; word-break:break-all; flex:1;';
     val.textContent = fullPath;
-    sec.appendChild(val);
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy';
+    copyBtn.style.cssText = 'flex-shrink:0; font-size:10px; padding:2px 8px; border-radius:4px; border:1px solid var(--border); background:var(--surface2); color:var(--text-muted); cursor:pointer;';
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(fullPath).then(() => {
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+      });
+    });
+    row.appendChild(val);
+    row.appendChild(copyBtn);
+    sec.appendChild(row);
     $modalInfo.appendChild(sec);
   }
 }
