@@ -94,8 +94,6 @@ Each folder is numbered so batches merge cleanly — just extract all ZIPs to th
 
 Every ZIP includes a `viewer.html` file. Open it in Chrome after extracting and pick your export folder — you get a full searchable gallery of everything you downloaded, with prompts, presets, and reference images all visible.
 
-**Want a proper desktop app instead?** **[⬇️ Download SORA Viewer (.exe)](https://github.com/MaggieL13/Sora-Downloader/releases/latest/download/SORA-Viewer-win.exe)** — no install needed, just run it. Auto-detects your SORA_EXPORT folder.
-
 ---
 
 ## Settings
