@@ -61,7 +61,11 @@ chrome.runtime.onMessage.addListener((message) => {
     if (!activeScanInProgress) return;
     const info = message.info || {};
     const found = Number(info.found || 0);
-    setStatus(`Scan stalled at ${found} items — waiting for your decision.`, { state: "paused", busy: false });
+    if (info.reason === "hidden") {
+      setStatus(`Scan paused at ${found} items because the Sora tab is no longer visible. Refocus that tab, then resume.`, { state: "paused", busy: false });
+    } else {
+      setStatus(`Scan stalled at ${found} items — waiting for your decision.`, { state: "paused", busy: false });
+    }
     scanStallPrompt.style.display = "";
     requestScanSnapshot(true);
     return;
@@ -130,6 +134,7 @@ function setDownloadMode(mode) {
   selectiveModeBtn.classList.toggle("active", mode === "selective");
   selectionControls.style.display = mode === "selective" ? "" : "none";
   downloadBtn.textContent = mode === "selective" ? "Download Selected" : "Download All";
+  autoScrollToggle.disabled = mode === "selective";
 
   if (mode === "selective") {
     enterSelectionMode();
@@ -138,6 +143,7 @@ function setDownloadMode(mode) {
   }
 
   updateSelectionCount();
+  refreshControlState();
   persistState();
 }
 
@@ -193,6 +199,11 @@ function updateSelectionCount() {
 // ── Scan ──
 
 async function onScan() {
+  if (downloadMode === "selective") {
+    setStatus("Scan is disabled in Selective mode. Switch to Full Download to scan the page.", { state: "idle", busy: false });
+    refreshControlState();
+    return;
+  }
   setBusy(true);
   setStatus("Scanning page...", { state: "scan", busy: true });
   try {
@@ -225,7 +236,7 @@ async function onScan() {
     // Stop live enrichment — full enrichment pass will handle any remaining
     if (liveEnrichToken) liveEnrichToken.cancelled = true;
 
-    currentItems = response.items || [];
+    currentItems = await fetchAllScanItems(activeScanTabId);
     await persistState();
     renderItems(currentItems);
 
@@ -261,17 +272,18 @@ async function onTogglePauseScan() {
   // Disable button immediately to prevent rapid toggling
   pauseScanBtn.disabled = true;
   try {
-    const tab = await getActiveTab();
-    ensureTabIsScannable(tab);
+    if (typeof activeScanTabId !== "number") {
+      throw new Error("No active scan tab is available.");
+    }
     scanPaused = !scanPaused;
     // Update UI immediately so user sees feedback
     refreshPauseButton();
+    refreshControlState();
     setStatus(scanPaused ? "Pausing scan..." : "Resuming scan...", { state: scanPaused ? "paused" : "scan", busy: !scanPaused });
-    await sendMessageWithAutoInject(tab.id, {
+    await sendMessageWithAutoInject(activeScanTabId, {
       type: "SORA_SET_SCAN_PAUSED",
       paused: scanPaused
     });
-    refreshControlState();
     if (scanPaused) await requestScanSnapshot(true);
     setStatus(scanPaused ? "Scan paused." : "Scan resumed.", { state: scanPaused ? "paused" : "scan", busy: !scanPaused });
   } catch (error) {
@@ -292,8 +304,9 @@ async function onTogglePauseScan() {
 async function onStallDone() {
   scanStallPrompt.style.display = "none";
   try {
-    const tab = await getActiveTab();
-    await sendMessageWithAutoInject(tab.id, { type: "SORA_CANCEL_SCAN" });
+    if (typeof activeScanTabId === "number") {
+      await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CANCEL_SCAN" });
+    }
   } catch {
     // If cancel fails, the scan will end naturally when the async response returns.
   }
@@ -304,8 +317,10 @@ async function onStallContinue() {
   scanStallPrompt.style.display = "none";
   setStatus("Resuming scan...", { state: "scan", busy: true });
   try {
-    const tab = await getActiveTab();
-    await sendMessageWithAutoInject(tab.id, { type: "SORA_CONTINUE_PAST_STALL" });
+    if (typeof activeScanTabId !== "number") {
+      throw new Error("No active scan tab is available.");
+    }
+    await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_CONTINUE_PAST_STALL" });
   } catch (error) {
     setStatus(`Resume failed: ${error.message}`, { state: "error", busy: false });
   }
@@ -359,6 +374,13 @@ async function onDownloadAll() {
   setStatus(`Starting download... (${targetItems.length} items)`, { state: "download", busy: true });
 
   try {
+    if (downloadMode === "selective") {
+      setStatus(`Selected ${targetItems.length} items. Finishing enrichment...`, { state: "download", busy: true });
+      await batchEnrichAllItems(targetItems, sharedDetailCache, "enrich", downloadCancelToken);
+      const totalRefs = targetItems.reduce((sum, item) => sum + Number(item?.referenceCount || 0), 0);
+      setStatus(`Selected ${targetItems.length} items${totalRefs ? ` (${totalRefs} references)` : ""}. Starting download...`, { state: "download", busy: true });
+    }
+
     const opts = getDownloadOptions();
     opts.cancelToken = downloadCancelToken;
     const result = await downloadAll(targetItems, opts);
@@ -376,7 +398,12 @@ async function onDownloadAll() {
       setStatus(doneMsg, { state: "done", busy: false });
     }
   } catch (error) {
-    setStatus(`Download failed: ${error.message}`, { state: "error", busy: false });
+    const msg = String(error?.message || error || "");
+    if (/array buffer allocation failed/i.test(msg)) {
+      setStatus("Download failed: batch ZIP ran out of memory. Lower Batch Size to 50 or 25 and run download again.", { state: "error", busy: false });
+    } else {
+      setStatus(`Download failed: ${msg}`, { state: "error", busy: false });
+    }
   } finally {
     activeDownloadInProgress = false;
     downloadCancelToken = null;
@@ -417,7 +444,12 @@ async function onRetryFailedOnly() {
       : `Retry done! ${result.completed} of ${result.requested} recovered.`;
     setStatus(retryMsg, { state: "done", busy: false });
   } catch (error) {
-    setStatus(`Retry failed: ${error.message}`, { state: "error", busy: false });
+    const msg = String(error?.message || error || "");
+    if (/array buffer allocation failed/i.test(msg)) {
+      setStatus("Retry failed: batch ZIP ran out of memory. Lower Batch Size to 50 or 25 and retry.", { state: "error", busy: false });
+    } else {
+      setStatus(`Retry failed: ${msg}`, { state: "error", busy: false });
+    }
   } finally {
     activeDownloadInProgress = false;
     downloadCancelToken = null;
@@ -568,7 +600,13 @@ function stripLeadingListMarker(input) {
 }
 
 async function getActiveTab() {
-  const tabs = await chrome.tabs.query({ active: true });
+  const tabs = await chrome.tabs.query({});
+  const activeSoraTab = tabs.find((t) => t.active && /^https:\/\/sora\.chatgpt\.com\//i.test(t.url || ""));
+  if (activeSoraTab && typeof activeSoraTab.id === "number") return activeSoraTab;
+  const anySoraTab = tabs.find((t) => /^https:\/\/sora\.chatgpt\.com\//i.test(t.url || ""));
+  if (anySoraTab && typeof anySoraTab.id === "number") return anySoraTab;
+  const activeHttpTab = tabs.find((t) => t.active && /^https?:\/\//i.test(t.url || ""));
+  if (activeHttpTab && typeof activeHttpTab.id === "number") return activeHttpTab;
   const httpTab = tabs.find((t) => /^https?:\/\//i.test(t.url || ""));
   if (httpTab && typeof httpTab.id === "number") return httpTab;
   const anyTab = tabs.find((t) => typeof t.id === "number");
@@ -578,8 +616,8 @@ async function getActiveTab() {
 
 function getBatchSize() {
   const raw = Number(batchSizeEl.value);
-  if (!Number.isFinite(raw) || raw < 50) return 300;
-  return Math.min(1000, Math.floor(raw));
+  if (!Number.isFinite(raw) || raw < 25) return 100;
+  return Math.min(500, Math.floor(raw));
 }
 
 async function sendMessageWithAutoInject(tabId, message) {
@@ -600,25 +638,20 @@ async function requestScanSnapshot(force = false) {
   if (!activeScanInProgress || typeof activeScanTabId !== "number") {
     return;
   }
+  if (!force) {
+    return;
+  }
   const now = Date.now();
   if (!force && (snapshotInFlight || now - lastSnapshotAt < 800)) {
     return;
   }
   snapshotInFlight = true;
   try {
-    const response = await sendMessageWithAutoInject(activeScanTabId, { type: "SORA_GET_SCAN_SNAPSHOT" });
-    if (response?.ok && Array.isArray(response.items)) {
+    const snapshotItems = await fetchAllScanItems(activeScanTabId);
+    if (Array.isArray(snapshotItems)) {
       // Merge snapshot with existing enriched data (so API-fetched prompts aren't overwritten)
-      currentItems = mergeSnapshotWithEnriched(currentItems, response.items);
+      currentItems = mergeSnapshotWithEnriched(currentItems, snapshotItems);
       renderItems(currentItems);
-      // Note: don't persistState() here — items are large and would exceed storage quota.
-      // Items persist in memory and get saved after scanning completes.
-      // Kick off live enrichment in the background (non-blocking)
-      if (liveEnrichToken && !liveEnrichToken.cancelled) {
-        liveEnrichItems(currentItems, sharedDetailCache, liveEnrichToken).then((count) => {
-          if (count > 0) renderItems(currentItems);
-        }).catch(() => {});
-      }
     }
   } catch {
     // Ignore intermittent snapshot failures during long scans.
@@ -718,15 +751,41 @@ function refreshControlState() {
   const scanning = activeScanInProgress;
   const paused = scanPaused;
   const scanBusy = scanning && !paused;
+  const selectiveMode = downloadMode === "selective";
 
-  scanBtn.disabled = uiBusy || scanning;
+  scanBtn.disabled = selectiveMode || uiBusy || scanning;
   pauseScanBtn.disabled = !scanning;
 
   clearCacheBtn.disabled = uiBusy && !scanning;
 
-  const lockDownloads = activeDownloadInProgress || (uiBusy && !scanning) || scanBusy;
+  const lockDownloads = activeDownloadInProgress || scanning || (uiBusy && !scanning) || scanBusy;
   downloadBtn.disabled = lockDownloads;
   retryFailedBtn.disabled = lockDownloads || !lastFailedItems.length;
+}
+
+async function fetchAllScanItems(tabId) {
+  const PAGE_SIZE = 100;
+  const items = [];
+  let offset = 0;
+
+  while (true) {
+    const response = await sendMessageWithAutoInject(tabId, {
+      type: "SORA_GET_SCAN_SNAPSHOT",
+      offset,
+      limit: PAGE_SIZE
+    });
+    if (!response?.ok || !Array.isArray(response.items)) {
+      throw new Error(response?.error || "Failed to read scan snapshot.");
+    }
+
+    items.push(...response.items);
+    if (!response.hasMore) {
+      break;
+    }
+    offset = Number(response.nextOffset || items.length);
+  }
+
+  return items;
 }
 
 function onToggleSection(which) {

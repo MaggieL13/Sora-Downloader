@@ -3,12 +3,16 @@
   let scanPaused = false;
   let scanCanceled = false;
   let resetStagnant = false;
+  let scanPauseReason = "";
   const HIGHLIGHT_STYLE_ID = "sora-downloader-scan-highlight-style";
   const SELECTION_STYLE_ID = "sora-downloader-selection-style";
   const selectedItemKeys = new Set();
   const selectedItemsMap = new Map(); // key → full item object (scan-free selection)
   let selectionModeActive = false;
   let selectionObserver = null;
+  let lastSelectedKey = "";
+  const pageNetworkLog = [];
+  const MAX_NETWORK_LOG = 80;
   const PROMPT_SELECTORS = [
     'div.truncate.text-token-text-primary',
     '[class*="text-token-text-primary"]',
@@ -30,6 +34,9 @@
   ];
   const REFERENCE_LINK_SELECTOR = 'a[href*="media_"], a[href*="gen_"]';
 
+  installPageNetworkLogger();
+  window.addEventListener("SORA_DL_NETWORK_EVENT", onPageNetworkEvent);
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message) {
       return;
@@ -44,6 +51,11 @@
 
     if (message.type === "SORA_SET_SCAN_PAUSED") {
       scanPaused = Boolean(message.paused);
+      if (!scanPaused) {
+        scanPauseReason = "";
+      } else if (!scanPauseReason) {
+        scanPauseReason = "manual";
+      }
       sendResponse({ ok: true, paused: scanPaused });
       return;
     }
@@ -51,6 +63,7 @@
     if (message.type === "SORA_CANCEL_SCAN") {
       scanCanceled = true;
       scanPaused = false;
+      scanPauseReason = "";
       sendResponse({ ok: true, canceled: true });
       return;
     }
@@ -58,14 +71,23 @@
     if (message.type === "SORA_CONTINUE_PAST_STALL") {
       resetStagnant = true;
       scanPaused = false;
+      scanPauseReason = "";
       sendResponse({ ok: true });
       return;
     }
 
     if (message.type === "SORA_GET_SCAN_SNAPSHOT") {
+      const offset = Math.max(0, Number(message.offset || 0));
+      const limit = Math.max(1, Math.min(250, Number(message.limit || 100)));
+      const allItems = Array.from(accumulatedItemsByKey.values());
+      const items = allItems.slice(offset, offset + limit);
       sendResponse({
         ok: true,
-        items: Array.from(accumulatedItemsByKey.values())
+        items,
+        total: allItems.length,
+        offset,
+        nextOffset: offset + items.length,
+        hasMore: offset + items.length < allItems.length
       });
       return;
     }
@@ -107,6 +129,8 @@
           if (item) selectedItemsMap.set(key, item);
         }
       });
+      const lastChecked = Array.from(document.querySelectorAll(".sora-dl-select-checkbox")).findLast((cb) => cb.checked);
+      lastSelectedKey = lastChecked?.dataset.soraDlKey || lastSelectedKey;
       updateSelectionBadges();
       sendResponse({ ok: true, count: selectedItemKeys.size });
       return;
@@ -120,6 +144,7 @@
       });
       selectedItemKeys.clear();
       selectedItemsMap.clear();
+      lastSelectedKey = "";
       updateSelectionBadges();
       sendResponse({ ok: true, count: 0 });
       return;
@@ -133,7 +158,7 @@
       scanWithAutoScroll(message.options || {})
         .then((items) => {
           const merged = mergeIntoAccumulator(items);
-          sendResponse({ ok: true, items: merged });
+          sendResponse({ ok: true, total: merged.length });
         })
         .catch((error) => {
           sendResponse({ ok: false, error: String(error) });
@@ -144,7 +169,7 @@
     try {
       const items = scanGenerationItems();
       const merged = mergeIntoAccumulator(items);
-      sendResponse({ ok: true, items: merged });
+      sendResponse({ ok: true, total: merged.length });
     } catch (error) {
       sendResponse({ ok: false, error: String(error) });
     }
@@ -180,6 +205,12 @@
       const prompt = extractPrompt(record, card, img);
       const preset = extractPreset(record, card);
       const referenceImages = extractReferenceImages(record, card, img);
+      const referenceDomDebug = inspectReferenceStrips(record, card, img);
+      const networkDebug = getNetworkDebugForItem({
+        detailUrl: detailLink,
+        taskId: inferredTaskId,
+        imageUrl
+      });
       const dedupeKey = `${detailLink || imageUrl}::${prompt}`;
 
       if (seen.has(dedupeKey)) {
@@ -200,6 +231,8 @@
         presetUrl: preset.url,
         presetDescription: preset.description,
         referenceImages,
+        referenceDomDebug,
+        networkDebug,
         referenceMediaIds: referenceImages.map((ref) => ref.mediaId).filter(Boolean),
         referenceCount: referenceImages.length,
         title,
@@ -288,11 +321,17 @@
       if (scanCanceled) {
         break;
       }
+      if (pauseIfTabHidden(byKey.size, totalSteps, totalMaxSteps, scrollContainer)) {
+        await waitWhilePaused();
+        if (scanCanceled) break;
+      }
 
       // Check if we've hit the stagnant limit — pause and ask user
       if (stagnantRounds >= stagnantLimit) {
         scanPaused = true;
+        scanPauseReason = "stalled";
         reportScanStalled({
+          reason: "stalled",
           found: byKey.size,
           step: totalSteps,
           maxSteps: totalMaxSteps,
@@ -331,7 +370,11 @@
 
       // Wait for the DOM to settle: base timer + wait for lazy images + MutationObserver
       await sleep(currentSettleMs);
-      await waitForDomSettle();
+      if (pauseIfTabHidden(byKey.size, totalSteps, totalMaxSteps, scrollContainer)) {
+        await waitWhilePaused();
+        if (scanCanceled) break;
+      }
+      await waitForDomSettle(scrollContainer);
 
       const afterStepItems = scanGenerationItems();
       for (const item of afterStepItems) {
@@ -391,7 +434,7 @@
    * 2. Use a MutationObserver to catch late-arriving img elements
    * Gives up after maxWaitMs to avoid blocking forever.
    */
-  function waitForDomSettle(maxWaitMs = 4000) {
+  function waitForDomSettle(scrollContainer, maxWaitMs = 4000) {
     return new Promise((resolve) => {
       const deadline = Date.now() + maxWaitMs;
       let observer = null;
@@ -405,15 +448,14 @@
       }
 
       function allViewportImagesLoaded() {
-        const viewportBottom = window.scrollY + window.innerHeight;
-        const viewportTop = window.scrollY;
         const imgs = document.querySelectorAll("img");
+        const containerRect = scrollContainer?.getBoundingClientRect?.() || null;
         for (const img of imgs) {
           const rect = img.getBoundingClientRect();
-          const absTop = rect.top + window.scrollY;
-          const absBottom = rect.bottom + window.scrollY;
-          // Only check images in or near the viewport
-          if (absBottom < viewportTop - 200 || absTop > viewportBottom + 200) continue;
+          const isNearViewport = containerRect
+            ? rect.bottom >= containerRect.top - 200 && rect.top <= containerRect.bottom + 200
+            : rect.bottom >= -200 && rect.top <= window.innerHeight + 200;
+          if (!isNearViewport) continue;
           // Skip tiny placeholders and data URIs
           if (rect.width < 10 || rect.height < 10) continue;
           const src = img.currentSrc || img.src || "";
@@ -497,6 +539,7 @@
       presetDescription: preferLongerString(left.presetDescription, right.presetDescription),
       imageCandidates: Array.from(new Set([...(left.imageCandidates || []), ...(right.imageCandidates || [])].filter(Boolean))),
       referenceImages: mergedRefs,
+      networkDebug: preferNetworkDebug(left.networkDebug, right.networkDebug),
       referenceMediaIds: mergedMediaIds,
       referenceCount: mergedRefs.length,
       collectedAt: preferLongerString(left.collectedAt, right.collectedAt)
@@ -509,19 +552,21 @@
       if (!ref || typeof ref !== "object") return;
       const mediaId = String(ref.mediaId || "");
       const genId = String(ref.genId || "");
+      const sourceTaskId = String(ref.sourceTaskId || "");
       const mediaUrl = String(ref.mediaUrl || "");
       const thumbUrl = String(ref.thumbUrl || "");
       const alt = String(ref.alt || "");
-      const key = mediaId || genId || thumbUrl || mediaUrl;
+      const key = mediaId || genId || sourceTaskId || thumbUrl || mediaUrl;
       if (!key) return;
       if (!byKey.has(key)) {
-        byKey.set(key, { mediaId, genId, mediaUrl, thumbUrl, alt });
+        byKey.set(key, { mediaId, genId, sourceTaskId, mediaUrl, thumbUrl, alt });
         return;
       }
       const existing = byKey.get(key);
       byKey.set(key, {
         mediaId: preferLongerString(existing.mediaId, mediaId),
         genId: preferLongerString(existing.genId, genId),
+        sourceTaskId: preferLongerString(existing.sourceTaskId, sourceTaskId),
         mediaUrl: preferLongerString(existing.mediaUrl, mediaUrl),
         thumbUrl: preferLongerString(existing.thumbUrl, thumbUrl),
         alt: preferLongerString(existing.alt, alt)
@@ -536,6 +581,16 @@
     const left = String(a || "");
     const right = String(b || "");
     return right.length > left.length ? right : left;
+  }
+
+  function preferNetworkDebug(a, b) {
+    return scoreNetworkDebug(b) >= scoreNetworkDebug(a) ? b : a;
+  }
+
+  function scoreNetworkDebug(value) {
+    const matched = Array.isArray(value?.matched) ? value.matched.length : 0;
+    const recent = Array.isArray(value?.recent) ? value.recent.length : 0;
+    return matched * 100 + recent;
   }
 
   function getImageCandidates(img) {
@@ -693,9 +748,10 @@
 
   function extractReferenceImages(recordContainer, cardContainer, imageNode) {
     const scope = recordContainer || cardContainer || document;
-    let anchors = getReferenceAnchors(scope);
+    const promptText = extractPrompt(recordContainer, cardContainer, imageNode);
+    let anchors = getReferenceAnchors(scope, imageNode, promptText);
     if (!anchors.length) {
-      anchors = getClosestDocumentReferenceAnchors(imageNode);
+      anchors = getClosestDocumentReferenceAnchors(imageNode, promptText);
     }
     const byRefKey = new Map();
 
@@ -719,13 +775,48 @@
       const rawImageUrl = img?.currentSrc || img?.src || "";
       const thumbUrl = rawImageUrl ? toAbsoluteUrl(rawImageUrl) : "";
       const mediaUrl = thumbUrl ? toAbsoluteUrl(thumbUrl.replace(/_thumb(?=\.[a-z0-9]+(?:[?#]|$))/i, "")) : "";
-      byRefKey.set(refKey, {
+      const sourceTaskId = extractTaskIdFromAssetUrl(mediaUrl || thumbUrl || href);
+      const effectiveKey = refKey || sourceTaskId;
+      if (!effectiveKey || byRefKey.has(effectiveKey)) {
+        continue;
+      }
+      byRefKey.set(effectiveKey, {
         mediaId: mediaId || extractMediaIdFromText(thumbUrl),
         genId: genId || extractGenIdFromText(thumbUrl),
+        sourceTaskId,
         mediaUrl,
         thumbUrl,
         alt: img?.alt || ""
       });
+    }
+
+    if (byRefKey.size === 0) {
+      const remixAnchors = getNearestRemixStripAnchors(scope, imageNode, promptText);
+      for (const anchor of remixAnchors) {
+        const href = toAbsoluteUrl(anchor.getAttribute("href") || anchor.href || "");
+        const mediaId = extractMediaIdFromText(href);
+        const genId = extractGenIdFromText(href);
+        if (genId && currentGenId && genId === currentGenId) {
+          continue;
+        }
+        const refKey = mediaId || genId || href;
+        if (!refKey || byRefKey.has(refKey)) {
+          continue;
+        }
+        const img = anchor.querySelector("img");
+        const rawImageUrl = img?.currentSrc || img?.src || "";
+        const thumbUrl = rawImageUrl ? toAbsoluteUrl(rawImageUrl) : "";
+        const mediaUrl = thumbUrl ? toAbsoluteUrl(thumbUrl.replace(/_thumb(?=\.[a-z0-9]+(?:[?#]|$))/i, "")) : "";
+        const sourceTaskId = extractTaskIdFromAssetUrl(mediaUrl || thumbUrl || href);
+        byRefKey.set(refKey, {
+          mediaId: mediaId || extractMediaIdFromText(thumbUrl),
+          genId: genId || extractGenIdFromText(thumbUrl),
+          sourceTaskId,
+          mediaUrl,
+          thumbUrl,
+          alt: img?.alt || ""
+        });
+      }
     }
 
     if (byRefKey.size === 0) {
@@ -740,93 +831,177 @@
     return Array.from(byRefKey.values());
   }
 
-  function getClosestDocumentReferenceAnchors(imageNode) {
+  function getClosestDocumentReferenceAnchors(imageNode, promptText) {
     const strips = getReferenceStripNodes(document);
-    if (!strips.length) return [];
+    const bestStrip = findBestReferenceStrip(strips, imageNode, promptText);
+    return bestStrip ? collectReferenceAnchorsFromStrip(bestStrip) : [];
+  }
+
+  function getReferenceAnchors(scope, imageNode, promptText) {
+    const localStrips = getReferenceStripNodes(scope);
+    const localBestStrip = findBestReferenceStrip(localStrips, imageNode, promptText);
+    if (localBestStrip) {
+      return collectReferenceAnchorsFromStrip(localBestStrip);
+    }
+
+    if (scope !== document) {
+      const documentStrips = getReferenceStripNodes(document);
+      const documentBestStrip = findBestReferenceStrip(documentStrips, imageNode, promptText);
+      if (documentBestStrip) {
+        return collectReferenceAnchorsFromStrip(documentBestStrip);
+      }
+    }
+
+    return [];
+  }
+
+  function getNearestRemixStripAnchors(scope, imageNode, promptText) {
+    const scopes = scope === document ? [document] : [scope, document];
+    for (const currentScope of scopes) {
+      const strips = getReferenceStripNodes(currentScope).filter((strip) => isRemixStripNode(strip));
+      const bestStrip = findBestReferenceStrip(strips, imageNode, promptText);
+      if (bestStrip) {
+        return Array.from(bestStrip.querySelectorAll(REFERENCE_LINK_SELECTOR)).filter((anchor) => {
+          const href = toAbsoluteUrl(anchor.getAttribute("href") || anchor.href || "");
+          return Boolean(extractMediaIdFromText(href) || extractGenIdFromText(href));
+        });
+      }
+    }
+    return [];
+  }
+
+  function findBestReferenceStrip(strips, imageNode, promptText) {
+    if (!Array.isArray(strips) || !strips.length) {
+      return null;
+    }
+
+    const eligible = strips.filter((strip) => collectReferenceAnchorsFromStrip(strip).length > 0);
+    if (!eligible.length) {
+      return null;
+    }
     if (!imageNode || !imageNode.getBoundingClientRect) {
-      const first = strips[0];
-      return Array.from(first.querySelectorAll(REFERENCE_LINK_SELECTOR));
+      return eligible[0];
     }
 
     const imageRect = imageNode.getBoundingClientRect();
     const imageCx = imageRect.left + imageRect.width / 2;
     const imageCy = imageRect.top + imageRect.height / 2;
-    let bestStrip = strips[0];
+    let bestStrip = eligible[0];
     let bestScore = Number.POSITIVE_INFINITY;
+    const normalizedPrompt = normalizeText(promptText || "").toLowerCase();
 
-    for (const strip of strips) {
+    for (const strip of eligible) {
       const r = strip.getBoundingClientRect();
       const cx = r.left + r.width / 2;
       const cy = r.top + r.height / 2;
       const dx = cx - imageCx;
       const dy = cy - imageCy;
-      const score = Math.hypot(dx, dy);
+      let score = Math.hypot(dx, dy);
+      if (isReferenceStripNode(strip)) {
+        score -= 200;
+      }
+      if (normalizedPrompt) {
+        const stripPrompt = getReferenceStripPromptText(strip).toLowerCase();
+        if (stripPrompt && (stripPrompt.includes(normalizedPrompt) || normalizedPrompt.includes(stripPrompt))) {
+          score -= 5000;
+        }
+      }
       if (score < bestScore) {
         bestScore = score;
         bestStrip = strip;
       }
     }
 
-    return Array.from(bestStrip.querySelectorAll(REFERENCE_LINK_SELECTOR));
+    return bestStrip;
   }
 
-  function getReferenceAnchors(scope) {
-    const byKey = new Map();
-    const pushAnchor = (anchor) => {
-      const key = anchor.href || anchor.getAttribute("href") || "";
-      if (!key) return;
-      byKey.set(key, anchor);
+  function collectReferenceAnchorsFromStrip(strip) {
+    if (!strip) return [];
+    return Array.from(strip.querySelectorAll(REFERENCE_LINK_SELECTOR)).filter((anchor) => isLikelyReferenceAnchor(anchor));
+  }
+
+  function getReferenceStripPromptText(strip) {
+    if (!strip) return "";
+    const button = strip.querySelector("button.truncate, button[data-state]");
+    if (button) {
+      return normalizeText(button.textContent || "");
+    }
+    return "";
+  }
+
+  function inspectReferenceStrips(recordContainer, cardContainer, imageNode) {
+    const scope = recordContainer || cardContainer || document;
+    const promptText = extractPrompt(recordContainer, cardContainer, imageNode);
+    const localStrips = getReferenceStripNodes(scope);
+    const documentStrips = scope === document ? localStrips : getReferenceStripNodes(document);
+    const localBestStrip = findBestReferenceStrip(localStrips, imageNode, promptText);
+    const documentBestStrip = findBestReferenceStrip(documentStrips, imageNode, promptText);
+    return {
+      promptText,
+      localStripCount: localStrips.length,
+      documentStripCount: documentStrips.length,
+      localBestStrip: summarizeReferenceStrip(localBestStrip),
+      documentBestStrip: summarizeReferenceStrip(documentBestStrip)
     };
+  }
 
-    // First pass: robust global/local detection of thumbnail-style reference anchors.
-    const localCandidates = Array.from(scope.querySelectorAll(REFERENCE_LINK_SELECTOR));
-    for (const anchor of localCandidates) {
-      if (isLikelyReferenceAnchor(anchor)) pushAnchor(anchor);
-    }
-    const globalCandidates = Array.from(document.querySelectorAll(REFERENCE_LINK_SELECTOR));
-    for (const anchor of globalCandidates) {
-      if (isLikelyReferenceAnchor(anchor)) pushAnchor(anchor);
-    }
-    if (byKey.size) {
-      return Array.from(byKey.values());
-    }
-
-    const strips = getReferenceStripNodes(scope);
-    const collected = [];
-    for (const strip of strips) {
-      const stripText = normalizeText(strip.textContent || "").toLowerCase();
-      if (!stripText.includes("remix") && !stripText.includes("prompt")) {
-        continue;
-      }
-      const anchors = Array.from(strip.querySelectorAll(REFERENCE_LINK_SELECTOR));
-      for (const anchor of anchors) {
-        const img = anchor.querySelector("img");
-        if (!img) continue;
-        const src = toAbsoluteUrl(img.currentSrc || img.src || "");
-        const href = toAbsoluteUrl(anchor.getAttribute("href") || anchor.href || "");
-        if (extractMediaIdFromText(href) || isThumbUrl(src) || hasTinyThumbContainer(img)) {
-          collected.push(anchor);
-        }
-      }
-    }
-    if (collected.length) {
-      return collected;
-    }
-
-    // Fallback: only keep clearly thumbnail-like/media-upload references.
-    return Array.from(scope.querySelectorAll(REFERENCE_LINK_SELECTOR)).filter((anchor) => {
-      const img = anchor.querySelector("img");
-      if (!img) return false;
-      const src = toAbsoluteUrl(img.currentSrc || img.src || "");
-      const href = toAbsoluteUrl(anchor.getAttribute("href") || anchor.href || "");
-      return Boolean(extractMediaIdFromText(href) || isThumbUrl(src) || hasTinyThumbContainer(img));
-    });
+  function summarizeReferenceStrip(strip) {
+    if (!strip) return null;
+    return {
+      promptText: getReferenceStripPromptText(strip),
+      stripText: normalizeText(strip.textContent || ""),
+      anchors: Array.from(strip.querySelectorAll(REFERENCE_LINK_SELECTOR)).map((anchor) => ({
+        href: toAbsoluteUrl(anchor.getAttribute("href") || anchor.href || ""),
+        text: normalizeText(anchor.textContent || "")
+      }))
+    };
   }
 
   function getReferenceStripNodes(scope) {
-    return Array.from(
-      scope.querySelectorAll('div.flex.max-w-full.items-center.gap-3, div[class*="max-w-full"][class*="items-center"][class*="gap-3"]')
+    const seedNodes = new Set();
+
+    for (const anchor of Array.from(scope.querySelectorAll(REFERENCE_LINK_SELECTOR))) {
+      if (!anchor.querySelector("img")) {
+        continue;
+      }
+
+      const tinyContainer =
+        anchor.closest('div.flex.max-w-full.items-center.gap-3') ||
+        anchor.closest('div[class*="max-w-full"][class*="items-center"][class*="gap-3"]') ||
+        anchor.closest('div[class*="items-center"][class*="gap-"]') ||
+        anchor.closest("div.flex");
+
+      if (tinyContainer) {
+        seedNodes.add(tinyContainer);
+      }
+    }
+
+    return Array.from(seedNodes).filter((node) => {
+      const hasPromptButton = Boolean(node.querySelector("button.truncate, button[data-state]"));
+      const hasReferenceAnchor = Array.from(node.querySelectorAll(REFERENCE_LINK_SELECTOR)).some((anchor) => anchor.querySelector("img"));
+      const stripText = normalizeText(node.textContent || "").toLowerCase();
+      const looksLikeRemixStrip = stripText.includes("remix");
+      return hasReferenceAnchor && (hasPromptButton || looksLikeRemixStrip);
+    });
+  }
+
+  function isReferenceStripNode(strip) {
+    if (!strip) return false;
+    const text = normalizeText(strip.textContent || "").toLowerCase();
+    if (isRemixStripNode(strip)) {
+      return true;
+    }
+    const hasPromptButton = Boolean(strip.querySelector("button.truncate, button[data-state]"));
+    const hasPreviewAnchors = Array.from(strip.querySelectorAll(REFERENCE_LINK_SELECTOR)).some((anchor) =>
+      isHoverPreviewReferenceAnchor(anchor)
     );
+    return hasPromptButton && hasPreviewAnchors;
+  }
+
+  function isRemixStripNode(strip) {
+    if (!strip) return false;
+    const text = normalizeText(strip.textContent || "").toLowerCase();
+    return text.includes("remix") || text.includes("remixed");
   }
 
   function isReferenceThumbnailImage(img, imageUrl) {
@@ -855,10 +1030,30 @@
     const isCover = /\bobject-cover\b/.test(cls);
     const isTiny = hasTinyThumbContainer(img);
     const isThumb = isThumbUrl(src);
+    const strip = anchor.closest('div.flex.max-w-full.items-center.gap-3, div[class*="max-w-full"][class*="items-center"][class*="gap-3"]');
+    const inReferenceStrip = isReferenceStripNode(strip);
+    const isHoverPreviewRef = isHoverPreviewReferenceAnchor(anchor);
     if (mediaId) {
-      return true;
+      return inReferenceStrip || isHoverPreviewRef || isCover || isTiny || isThumb;
     }
-    return isCover || isTiny || isThumb;
+    return (inReferenceStrip || isHoverPreviewRef) && (isCover || isTiny || isThumb);
+  }
+
+  function isHoverPreviewReferenceAnchor(anchor) {
+    if (!anchor) return false;
+    const href = toAbsoluteUrl(anchor.getAttribute("href") || anchor.href || "");
+    if (!extractMediaIdFromText(href) && !extractGenIdFromText(href)) {
+      return false;
+    }
+    const img = anchor.querySelector("img");
+    if (!img) {
+      return false;
+    }
+    const src = toAbsoluteUrl(img.currentSrc || img.src || "");
+    const hasRadixDescribedBy = Boolean(anchor.getAttribute("aria-describedby"));
+    const dataState = String(anchor.getAttribute("data-state") || "");
+    const tinyLike = hasTinyThumbContainer(img) || isThumbUrl(src) || /\bobject-cover\b/.test(String(img.className || ""));
+    return tinyLike && (hasRadixDescribedBy || dataState.includes("open"));
   }
 
   function hasTinyThumbContainer(img) {
@@ -912,17 +1107,19 @@
       const href = toAbsoluteUrl(anchor?.getAttribute("href") || anchor?.href || "");
       const mediaId = extractMediaIdFromText(href) || extractMediaIdFromText(thumbUrl);
       const genId = extractGenIdFromText(href) || extractGenIdFromText(thumbUrl);
-      if (!mediaId && !genId) {
+      const sourceTaskId = extractTaskIdFromAssetUrl(thumbUrl) || extractTaskIdFromAssetUrl(href);
+      if (!mediaId && !genId && !sourceTaskId) {
         continue;
       }
       if (genId && currentGenId && genId === currentGenId) {
         continue;
       }
-      const key = mediaId || genId || thumbUrl;
+      const key = mediaId || genId || sourceTaskId || thumbUrl;
       if (refsByKey.has(key)) continue;
       refsByKey.set(key, {
         mediaId,
         genId,
+        sourceTaskId,
         mediaUrl: toAbsoluteUrl(thumbUrl.replace(/_thumb(?=\.[a-z0-9]+(?:[?#]|$))/i, "")),
         thumbUrl,
         alt: img.alt || ""
@@ -1137,6 +1334,28 @@
     }
   }
 
+  function pauseIfTabHidden(foundCount, step, maxSteps, scrollContainer) {
+    if (!document.hidden) {
+      if (scanPauseReason === "hidden") {
+        scanPauseReason = "";
+      }
+      return false;
+    }
+    if (scanPaused && scanPauseReason === "hidden") {
+      return true;
+    }
+    scanPaused = true;
+    scanPauseReason = "hidden";
+    reportScanStalled({
+      reason: "hidden",
+      found: foundCount,
+      step,
+      maxSteps,
+      scrollY: Math.round(getScrollInfo(scrollContainer).scrollY)
+    });
+    return true;
+  }
+
   // ── Selection mode ──
 
   function ensureSelectionStyle() {
@@ -1167,6 +1386,7 @@
         outline-offset: -3px;
       }
       .sora-dl-select-badge {
+        display: none !important;
         position: absolute;
         right: 4px;
         top: 4px;
@@ -1189,27 +1409,41 @@
     const detailLink = card.querySelector('a[href*="/g/gen_"]');
     const detailUrl = detailLink ? (detailLink.href || "") : "";
     const img = card.querySelector("img");
-    const imageUrl = img ? (img.currentSrc || img.src || "") : "";
+    const candidateUrls = img ? getImageCandidates(img) : [];
+    const imageUrl = candidateUrls[0] || "";
     if (!detailUrl && !imageUrl) return null;
+    const record = findRecordContainer(card);
     const key = detailUrl || imageUrl;
     const inferredTaskId = extractTaskIdFromAssetUrl(imageUrl);
-    const taskLink = extractTaskLink(card, inferredTaskId);
+    const taskLink = extractTaskLink(record, inferredTaskId);
+    const title = extractTitle(record);
+    const prompt = extractPrompt(record, card, img);
+    const preset = extractPreset(record, card);
+    const referenceImages = extractReferenceImages(record, card, img);
+    const referenceDomDebug = inspectReferenceStrips(record, card, img);
+    const networkDebug = getNetworkDebugForItem({
+      detailUrl,
+      taskId: inferredTaskId,
+      imageUrl
+    });
     return {
       id: crypto.randomUUID(),
       imageUrl,
-      imageCandidates: imageUrl ? [imageUrl] : [],
+      imageCandidates: candidateUrls,
       detailUrl,
       taskUrl: taskLink,
       taskId: inferredTaskId,
-      presetName: "",
-      presetId: "",
-      presetUrl: "",
-      presetDescription: "",
-      referenceImages: [],
-      referenceMediaIds: [],
-      referenceCount: 0,
-      title: "",
-      prompt: "Prompt not detected",
+      presetName: preset.name,
+      presetId: preset.id,
+      presetUrl: preset.url,
+      presetDescription: preset.description,
+      referenceImages,
+      referenceDomDebug,
+      networkDebug,
+      referenceMediaIds: referenceImages.map((ref) => ref.mediaId).filter(Boolean),
+      referenceCount: referenceImages.length,
+      title,
+      prompt,
       alt: img?.alt || "",
       pageTitle: document.title || "",
       pageUrl: location.href,
@@ -1239,21 +1473,37 @@
 
     cb.addEventListener("change", (e) => {
       e.stopPropagation();
-      if (cb.checked) {
-        selectedItemKeys.add(key);
-        card.classList.add("sora-dl-selected");
-        const item = extractItemFromCard(card);
-        if (item) selectedItemsMap.set(key, item);
+      const isShiftRange = cb.dataset.soraDlShiftRange === "1" && lastSelectedKey && lastSelectedKey !== key;
+      if (isShiftRange) {
+        const orderedCards = getSelectableCards();
+        const orderedKeys = orderedCards
+          .map((candidate) => getCardSelectionKey(candidate))
+          .filter(Boolean);
+        const startIndex = orderedKeys.indexOf(lastSelectedKey);
+        const endIndex = orderedKeys.indexOf(key);
+        if (startIndex >= 0 && endIndex >= 0) {
+          const [from, to] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
+          for (let index = from; index <= to; index += 1) {
+            const rangeCard = orderedCards[index];
+            if (!rangeCard) continue;
+            setCardSelected(rangeCard, cb.checked);
+          }
+        } else {
+          setCardSelected(card, cb.checked);
+        }
       } else {
-        selectedItemKeys.delete(key);
-        selectedItemsMap.delete(key);
-        card.classList.remove("sora-dl-selected");
+        setCardSelected(card, cb.checked);
       }
+      lastSelectedKey = key;
+      delete cb.dataset.soraDlShiftRange;
       updateSelectionBadges();
       reportSelectionCount();
     });
 
-    cb.addEventListener("click", (e) => e.stopPropagation());
+    cb.addEventListener("click", (e) => {
+      cb.dataset.soraDlShiftRange = e.shiftKey ? "1" : "";
+      e.stopPropagation();
+    });
 
     wrap.appendChild(cb);
     card.appendChild(wrap);
@@ -1265,12 +1515,7 @@
 
   function addSelectionCheckboxesToAllCards() {
     removeSelectionCheckboxes();
-    const cardSelector = CARD_SELECTORS.join(", ");
-    document.querySelectorAll(cardSelector).forEach((card) => {
-      if (card.querySelector('a[href*="/g/gen_"], img[src*="videos.openai.com"]')) {
-        addCheckboxToCard(card);
-      }
-    });
+    getSelectableCards().forEach((card) => addCheckboxToCard(card));
     updateSelectionBadges();
   }
 
@@ -1278,10 +1523,8 @@
     stopSelectionObserver();
     selectionObserver = new MutationObserver(() => {
       if (!selectionModeActive) return;
-      const cardSelector = CARD_SELECTORS.join(", ");
-      document.querySelectorAll(cardSelector).forEach((card) => {
-        if (!card.querySelector(".sora-dl-select-wrap") &&
-            card.querySelector('a[href*="/g/gen_"], img[src*="videos.openai.com"]')) {
+      getSelectableCards().forEach((card) => {
+        if (!card.querySelector(".sora-dl-select-wrap")) {
           addCheckboxToCard(card);
         }
       });
@@ -1300,6 +1543,48 @@
     document.querySelectorAll(".sora-dl-select-wrap").forEach((el) => el.remove());
     document.querySelectorAll(".sora-dl-select-badge").forEach((el) => el.remove());
     document.querySelectorAll(".sora-dl-selected").forEach((el) => el.classList.remove("sora-dl-selected"));
+    lastSelectedKey = "";
+  }
+
+  function getCardSelectionKey(card) {
+    if (!card) return "";
+    const detailLink = card.querySelector('a[href*="/g/gen_"]');
+    const img = card.querySelector("img");
+    return (detailLink?.href) || (img?.currentSrc || img?.src) || "";
+  }
+
+  function getSelectableCards() {
+    const byKey = new Map();
+    const detailLinks = Array.from(document.querySelectorAll('a[href*="/g/gen_"]'));
+    for (const link of detailLinks) {
+      const card = findCardContainer(link) || link.closest("[data-sora-dl-card], article, figure, li, [role='listitem']");
+      const key = getCardSelectionKey(card);
+      if (!card || !key || byKey.has(key)) {
+        continue;
+      }
+      byKey.set(key, card);
+    }
+    return Array.from(byKey.values());
+  }
+
+  function setCardSelected(card, selected) {
+    if (!card) return;
+    const key = getCardSelectionKey(card);
+    if (!key) return;
+    const checkbox = card.querySelector(".sora-dl-select-checkbox");
+    if (checkbox) {
+      checkbox.checked = selected;
+    }
+    if (selected) {
+      selectedItemKeys.add(key);
+      card.classList.add("sora-dl-selected");
+      const item = extractItemFromCard(card);
+      if (item) selectedItemsMap.set(key, item);
+    } else {
+      selectedItemKeys.delete(key);
+      selectedItemsMap.delete(key);
+      card.classList.remove("sora-dl-selected");
+    }
   }
 
   function updateSelectionBadges() {
@@ -1322,5 +1607,51 @@
     } catch {
       // Best-effort.
     }
+  }
+
+  function onPageNetworkEvent(event) {
+    const detail = event?.detail;
+    if (!detail || typeof detail !== "object") return;
+    pageNetworkLog.push({
+      ts: String(detail.ts || new Date().toISOString()),
+      url: String(detail.url || ""),
+      method: String(detail.method || "GET"),
+      source: String(detail.source || ""),
+      status: Number(detail.status || 0),
+      contentType: String(detail.contentType || ""),
+      bodySnippet: String(detail.bodySnippet || "")
+    });
+    if (pageNetworkLog.length > MAX_NETWORK_LOG) {
+      pageNetworkLog.splice(0, pageNetworkLog.length - MAX_NETWORK_LOG);
+    }
+  }
+
+  function getNetworkDebugForItem(item) {
+    const detailUrl = String(item?.detailUrl || "");
+    const imageUrl = String(item?.imageUrl || "");
+    const taskId = String(item?.taskId || "");
+    const genId = extractGenIdFromText(detailUrl);
+    const imageTaskId = extractTaskIdFromAssetUrl(imageUrl);
+    const needles = [detailUrl, genId, taskId, imageTaskId].filter(Boolean);
+    const recent = pageNetworkLog.slice(-20);
+    const matched = recent.filter((entry) => {
+      const haystack = `${entry.url}\n${entry.bodySnippet}`;
+      return needles.some((needle) => haystack.includes(needle));
+    });
+    return { matched, recent };
+  }
+
+  function installPageNetworkLogger() {
+    if (document.documentElement?.dataset?.soraDlNetworkLoggerInstalled === "1") {
+      return;
+    }
+    if (document.documentElement) {
+      document.documentElement.dataset.soraDlNetworkLoggerInstalled = "1";
+    }
+
+    const script = document.createElement("script");
+    script.src = chrome.runtime.getURL("page-hook.js");
+    (document.documentElement || document.head || document.body).appendChild(script);
+    script.remove();
   }
 })();
