@@ -14,6 +14,9 @@
         <p class="hint">
           Scan your generations, then export images + prompts with structure.
         </p>
+        <p class="hint" style="margin-top:8px; color:#ffb36b; font-weight:700;">
+          PLEASE DON'T CLICK AWAY FROM THE BROWSER WHILE AUTO-SCROLL SCANNING.
+        </p>
       </header>
 
       <section class="card">
@@ -67,8 +70,8 @@
 
           <label class="option">
             Batch size (items per ZIP)
-            <input id="batchSize" type="number" min="50" max="1000" step="50" value="300" />
-            <span class="fieldhint">Each batch produces one ZIP. Lower = less memory usage.</span>
+            <input id="batchSize" type="number" min="25" max="500" step="25" value="100" />
+            <span class="fieldhint">Each batch produces one ZIP. Lower is slower but much safer for large exports.</span>
           </label>
 
           <label class="option">

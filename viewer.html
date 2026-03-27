@@ -915,7 +915,7 @@
 'use strict';
 
 // ─── State ────────────────────────────────────────────────────────────────────
-let allItems = [];        // [{meta, blobUrl, fileHandle, dirHandle}]
+let allItems = [];        // [{meta, blobUrl, fileHandle, dirHandle, refBlobUrls}]
 let filtered = [];        // current filtered + sorted view
 let currentIndex = -1;   // index in `filtered`
 let rootHandle = null;
@@ -1038,6 +1038,7 @@ async function loadFolderFromFiles(fileList) {
 
   for (const item of allItems) {
     if (item.blobUrl) URL.revokeObjectURL(item.blobUrl);
+    if (item.refBlobUrls) item.refBlobUrls.forEach(u => u && URL.revokeObjectURL(u));
   }
   allItems = [];
   rootHandle = null;
@@ -1081,13 +1082,14 @@ async function loadFolderFromFiles(fileList) {
 
     const images = meta.images || [];
     const items = [];
+    const refBlobUrls = getReferenceBlobUrlsFromFiles(subdirFiles);
 
     for (const imgMeta of images) {
       if (!imgMeta.file) continue;
       const relPath = `${rootName}/${subdirName}/${imgMeta.file}`;
       const imgFile = fileMap.get(relPath);
       const blobUrl = imgFile ? URL.createObjectURL(imgFile) : null;
-      items.push({ meta, blobUrl, fileHandle: null, dirHandle: null, imageFile: imgMeta.file });
+      items.push({ meta, blobUrl, fileHandle: null, dirHandle: null, imageFile: imgMeta.file, refBlobUrls });
     }
 
     // Fallback: no images in metadata, grab any image in the subdir
@@ -1096,7 +1098,7 @@ async function loadFolderFromFiles(fileList) {
         /\.(png|jpg|jpeg|webp|gif)$/i.test(f.name) && !f.webkitRelativePath.includes('/references/')
       );
       if (imgFile) {
-        items.push({ meta, blobUrl: URL.createObjectURL(imgFile), fileHandle: null, dirHandle: null, imageFile: imgFile.name });
+        items.push({ meta, blobUrl: URL.createObjectURL(imgFile), fileHandle: null, dirHandle: null, imageFile: imgFile.name, refBlobUrls });
       }
     }
 
@@ -1132,6 +1134,7 @@ async function loadSubdir(dirHandle) {
 
   const images = meta.images || [];
   const items = [];
+  const refBlobUrls = await getReferenceBlobUrlsFromDirectory(dirHandle);
 
   for (const imgMeta of images) {
     if (!imgMeta.file) continue;
@@ -1144,7 +1147,7 @@ async function loadSubdir(dirHandle) {
     } catch {
       blobUrl = null;
     }
-    items.push({ meta, blobUrl, fileHandle, dirHandle, imageFile: imgMeta.file });
+    items.push({ meta, blobUrl, fileHandle, dirHandle, imageFile: imgMeta.file, refBlobUrls });
   }
 
   // Fallback: no images in metadata, grab any image file
@@ -1154,7 +1157,7 @@ async function loadSubdir(dirHandle) {
         if (fentry.kind === 'file' && /\.(png|jpg|jpeg|webp|gif)$/i.test(fname)) {
           const imgFile = await fentry.getFile();
           const blobUrl = URL.createObjectURL(imgFile);
-          items.push({ meta, blobUrl, fileHandle: fentry, dirHandle, imageFile: fname });
+          items.push({ meta, blobUrl, fileHandle: fentry, dirHandle, imageFile: fname, refBlobUrls });
           break;
         }
       }
@@ -1201,12 +1204,12 @@ function applyFilters() {
     if (sortOrder === 'newest') {
       const da = new Date(a.meta.generatedAt || 0).getTime();
       const db = new Date(b.meta.generatedAt || 0).getTime();
-      return da - db;
+      return db - da;
     }
     if (sortOrder === 'oldest') {
       const da = new Date(a.meta.generatedAt || 0).getTime();
       const db = new Date(b.meta.generatedAt || 0).getTime();
-      return db - da;
+      return da - db;
     }
     // index-based: pull first image index
     const ia = ((a.meta.images || []).find(i => i.file === a.imageFile) || a.meta.images?.[0])?.index || 0;
@@ -1469,54 +1472,16 @@ async function renderModal() {
     const grid = document.createElement('div');
     grid.className = 'refs-grid';
 
-    for (const ref of refs) {
+    for (const [refIndex, ref] of refs.entries()) {
       const thumb = document.createElement('div');
       thumb.className = 'ref-thumb';
 
       const img = document.createElement('img');
       img.alt = ref.alt || 'Reference';
-
-      // Try to load from local files first, then fall back to URLs
-      let localLoaded = false;
-
-      // Try to find in the export folder by genId or mediaId
-      if (item.dirHandle && (ref.genId || ref.mediaId)) {
-        // Look in parent folder structure for matching subdir
-        // We'll try a best-effort approach: check if the root handle has a subdir for genId
-        if (ref.genId) {
-          if (rootHandle) {
-            try {
-              const genIdShort = ref.genId.replace('gen_', '');
-              for await (const [dname, dentry] of rootHandle.entries()) {
-                if (dentry.kind === 'directory' && dname.includes(genIdShort)) {
-                  for await (const [fname, fentry] of dentry.entries()) {
-                    if (fentry.kind === 'file' && /\.(png|jpg|jpeg|webp)$/i.test(fname)) {
-                      const f = await fentry.getFile();
-                      img.src = URL.createObjectURL(f);
-                      localLoaded = true;
-                      break;
-                    }
-                  }
-                  if (localLoaded) break;
-                }
-              }
-            } catch {}
-          } else if (window._fallbackFileMap) {
-            // Fallback mode: search the fileMap for a matching subdir
-            const genIdShort = ref.genId.replace('gen_', '');
-            for (const [relPath, file] of window._fallbackFileMap) {
-              const parts = relPath.split('/');
-              if (parts.length >= 3 && parts[1].includes(genIdShort) && /\.(png|jpg|jpeg|webp)$/i.test(parts[2])) {
-                img.src = URL.createObjectURL(file);
-                localLoaded = true;
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (!localLoaded) {
+      const localRefUrl = item.refBlobUrls?.[refIndex] || '';
+      if (localRefUrl) {
+        img.src = localRefUrl;
+      } else {
         // Fall back to thumbUrl then mediaUrl
         const fallback = ref.thumbUrl || ref.mediaUrl || '';
         if (fallback) {
@@ -1612,6 +1577,39 @@ document.addEventListener('keydown', e => {
 });
 
 // ─── Utility ──────────────────────────────────────────────────────────────────
+function sortReferenceNames(a, b) {
+  const an = a.match(/reference_(\d+)/i);
+  const bn = b.match(/reference_(\d+)/i);
+  const ai = an ? Number(an[1]) : Number.POSITIVE_INFINITY;
+  const bi = bn ? Number(bn[1]) : Number.POSITIVE_INFINITY;
+  return ai - bi || a.localeCompare(b);
+}
+
+function getReferenceBlobUrlsFromFiles(files) {
+  return files
+    .filter(f => /\/references\/reference_\d+\.(png|jpg|jpeg|webp|gif)$/i.test(f.webkitRelativePath))
+    .sort((a, b) => sortReferenceNames(a.name, b.name))
+    .map(f => URL.createObjectURL(f));
+}
+
+async function getReferenceBlobUrlsFromDirectory(dirHandle) {
+  const urls = [];
+  try {
+    const refsDir = await dirHandle.getDirectoryHandle('references');
+    const files = [];
+    for await (const [fname, entry] of refsDir.entries()) {
+      if (entry.kind !== 'file') continue;
+      if (!/^reference_\d+\.(png|jpg|jpeg|webp|gif)$/i.test(fname)) continue;
+      files.push({ name: fname, entry });
+    }
+    files.sort((a, b) => sortReferenceNames(a.name, b.name));
+    for (const fileEntry of files) {
+      const file = await fileEntry.entry.getFile();
+      urls.push(URL.createObjectURL(file));
+    }
+  } catch {}
+  return urls;
+}
 </script>
 </body>
 </html>
