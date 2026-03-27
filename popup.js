@@ -638,9 +638,6 @@ async function requestScanSnapshot(force = false) {
   if (!activeScanInProgress || typeof activeScanTabId !== "number") {
     return;
   }
-  if (!force) {
-    return;
-  }
   const now = Date.now();
   if (!force && (snapshotInFlight || now - lastSnapshotAt < 800)) {
     return;
