@@ -23,7 +23,7 @@ SORA uses virtualized scrolling, meaning your thousands of images are never all 
 - Live API enrichment during scan (prompts, preset details, reference images)
 - Stall detection with user choice — "It's Done" / "Keep Scanning"
 - SORA loading spinner awareness (waits instead of false-stalling)
-- Batched ZIP downloads — configurable batch size, default 300 per ZIP
+- Batched ZIP downloads — configurable batch size, default 100 per ZIP
 - 5 parallel image fetches — significantly faster than sequential
 - Selective mode — checkboxes appear directly on image cards, no scan needed first
 - Pause / Cancel during both scanning and downloading
@@ -41,7 +41,7 @@ This is an unpacked Chrome extension (not on the Web Store). Here's how to insta
 3. Open Chrome and go to `chrome://extensions`
 4. Enable **Developer mode** (toggle in the top right)
 5. Click **Load unpacked**
-6. Select the `sora-downloader-extension` folder inside the unzipped folder
+6. Select the `Sora-Downloader` folder inside the unzipped folder
 7. The extension icon will appear in your toolbar
 
 > **"Developer mode" sounds scary but it just means Chrome loads the extension from your local files instead of the store. Nothing sketchy — you can read every line of code right here.**
@@ -60,7 +60,7 @@ This is an unpacked Chrome extension (not on the Web Store). Here's how to insta
 
 ### Selective download (pick specific images)
 
-1. Click **Selective** in the popup — no scan needed
+1. Click **Selective** in the popup — scanning is disabled in this mode
 2. Checkboxes appear on every image card on the page
 3. Scroll and check what you want — new cards get checkboxes automatically
 4. Click **Download Selected**
@@ -112,7 +112,7 @@ Works with any existing SORA_EXPORT folder. Just open the file in Chrome, click 
 |---------|-------------|
 | **Organize by generation folders** | Groups images by generation (recommended) |
 | **Download mode** | `Safe` (gentler on SORA's servers) or `Fast` |
-| **Batch size** | Items per ZIP (50–1000, default 300) |
+| **Batch size** | Items per ZIP (25–500, default 100) |
 | **Folder prefix** | Root folder name (default: `SORA_EXPORT`) |
 | **Include Prompts** | Saves `prompt.txt` per generation |
 | **Include Presets** | Saves `preset.txt` with name + full description |
