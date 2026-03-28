@@ -690,49 +690,6 @@ function extractGenerationId(item) {
 
 // ── Enrichment ──
 
-/**
- * Live-enrich items during scanning. Processes items one at a time (gentle on API)
- * and skips items already enriched. Returns number of newly enriched items.
- * Designed to be called repeatedly as new items arrive from scan snapshots.
- */
-const _liveEnrichedKeys = new Set();
-let _liveEnrichRunning = false;
-
-async function liveEnrichItems(items, detailCache, cancelToken) {
-  if (_liveEnrichRunning) return 0;
-  _liveEnrichRunning = true;
-  let count = 0;
-  try {
-    for (const item of items) {
-      if (cancelToken && cancelToken.cancelled) break;
-      const key = item.detailUrl || item.imageUrl || "";
-      if (!key || _liveEnrichedKeys.has(key)) continue;
-      const genId = extractGenerationId(item);
-      if (!genId) {
-        _liveEnrichedKeys.add(key);
-        continue;
-      }
-      try {
-        await enrichItemReferences(item, detailCache);
-        _liveEnrichedKeys.add(key);
-        count++;
-      } catch {
-        // Non-fatal — will retry during full enrichment later
-      }
-      // Small delay to be gentle on the API during scanning
-      await sleep(150);
-    }
-  } finally {
-    _liveEnrichRunning = false;
-  }
-  return count;
-}
-
-function resetLiveEnrichState() {
-  _liveEnrichedKeys.clear();
-  _liveEnrichRunning = false;
-}
-
 async function batchEnrichAllItems(items, detailCache, mode, cancelToken) {
   const BATCH_SIZE = 8;
   let enriched = 0;
@@ -802,8 +759,12 @@ async function enrichItemReferences(item, detailCache) {
 
   const domRefs = sanitizeDomReferences(item, item.referenceImages);
   const apiRefs = await resolveInpaintItems(genData.inpaint_items, detailCache, token);
+  const topLevelRefs = await resolveTopLevelGenerationReferences(genData, detailCache, token, genId);
   const networkRefs = await resolveNetworkReferencesFromDebug(item.networkDebug, detailCache, token, genId);
-  const mergedPrimaryRefs = mergeReferenceSets(mergeReferenceSets(domRefs, apiRefs), networkRefs);
+  const mergedPrimaryRefs = mergeReferenceSets(
+    mergeReferenceSets(mergeReferenceSets(domRefs, apiRefs), topLevelRefs),
+    networkRefs
+  );
   const needsDetailFallback = !mergedPrimaryRefs.some((ref) => String(ref?.genId || "").startsWith("gen_"));
   const detailPageRefs = needsDetailFallback
     ? await resolveDetailPageReferences(item, detailCache)
@@ -1043,6 +1004,43 @@ async function resolveNetworkReferencesFromDebug(networkDebug, cache, token, cur
       if (!resolved) continue;
       refsByKey.set(mediaId, resolved);
     }
+  }
+
+  return Array.from(refsByKey.values());
+}
+
+async function resolveTopLevelGenerationReferences(genData, cache, token, currentGenId) {
+  if (!genData || typeof genData !== "object") return [];
+
+  const refsByKey = new Map();
+  const candidateEntries = [];
+
+  const topLevelGenId = getReferenceGenerationId(genData);
+  const topLevelMediaId = getReferenceMediaId(genData);
+  if (topLevelGenId || topLevelMediaId || genData.servable_url) {
+    candidateEntries.push(genData);
+  }
+
+  const remixConfig = genData.remix_config;
+  if (remixConfig && typeof remixConfig === "object") {
+    const remixGenId = getReferenceGenerationId(remixConfig);
+    const remixMediaId = getReferenceMediaId(remixConfig);
+    if (remixGenId || remixMediaId || remixConfig.servable_url) {
+      candidateEntries.push(remixConfig);
+    }
+  }
+
+  for (const entry of candidateEntries) {
+    const resolved = await resolveSingleInpaintItem(entry, cache, token);
+    if (!resolved) continue;
+    if (resolved.genId && resolved.genId === currentGenId) continue;
+    const key =
+      String(resolved.mediaId || "") ||
+      String(resolved.genId || "") ||
+      String(resolved.sourceTaskId || "") ||
+      String(resolved.thumbUrl || resolved.mediaUrl || "");
+    if (!key || refsByKey.has(key)) continue;
+    refsByKey.set(key, resolved);
   }
 
   return Array.from(refsByKey.values());
