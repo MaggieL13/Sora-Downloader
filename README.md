@@ -1,6 +1,6 @@
 # SORA Downloader — Bulk Export for SORA AI
 
-> **Note:** SORA is shutting down on March 13, 2026. This tool was built to rescue your creative work before it's gone. If you have generations on SORA, use it now.
+> **Note:** SORA is shutting down some time in 2026. This tool was built to rescue your creative work before it's gone. If you have generations on SORA, use it now.
 
 A Chrome extension that bulk-exports your entire SORA AI generation history — images, prompts, presets, and reference images — into organized ZIP archives. Built out of spite because the official data export never arrived. 💜
 

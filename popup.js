@@ -46,7 +46,6 @@ let activeDownloadInProgress = false;
 let downloadCancelToken = null;
 let downloadMode = "full"; // "full" | "selective"
 let selectedKeys = new Set();
-let liveEnrichToken = null;
 
 // ── Scan progress from content script (arrives via chrome.runtime messaging) ──
 chrome.runtime.onMessage.addListener((message) => {
@@ -217,8 +216,6 @@ async function onScan() {
     currentItems = [];
     renderItems(currentItems);
     scanStallPrompt.style.display = "none";
-    resetLiveEnrichState();
-    liveEnrichToken = { cancelled: false };
     await sendMessageWithAutoInject(tab.id, { type: "SORA_CLEAR_SCAN_CACHE" });
     const response = await sendMessageWithAutoInject(tab.id, {
       type: autoScrollToggle.checked ? "SORA_SCAN_WITH_SCROLL" : "SORA_SCAN",
@@ -232,9 +229,6 @@ async function onScan() {
     if (!response || !response.ok) {
       throw new Error(response?.error || "Content script did not return data.");
     }
-
-    // Stop live enrichment — full enrichment pass will handle any remaining
-    if (liveEnrichToken) liveEnrichToken.cancelled = true;
 
     currentItems = await fetchAllScanItems(activeScanTabId);
     await persistState();
@@ -256,8 +250,6 @@ async function onScan() {
     activeScanInProgress = false;
     activeScanTabId = null;
     scanPaused = false;
-    if (liveEnrichToken) liveEnrichToken.cancelled = true;
-    liveEnrichToken = null;
     scanStallPrompt.style.display = "none";
     refreshControlState();
     refreshPauseButton();
@@ -487,7 +479,6 @@ async function onClearCache() {
     activeScanInProgress = false;
     activeScanTabId = null;
     scanPaused = false;
-    if (liveEnrichToken) liveEnrichToken.cancelled = true;
 
     currentItems = [];
     lastFailedItems = [];
