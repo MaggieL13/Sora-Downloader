@@ -1,5 +1,7 @@
 // ── Shared state ──
 const sharedDetailCache = new Map();
+// Run-lifetime cache for resolved reference source candidates. Export registries remain batch-local.
+const sharedReferenceCandidateCache = new Map();
 
 // ── Download orchestration ──
 
@@ -17,6 +19,7 @@ async function downloadAllAsFiles(items, options) {
   const failures = [];
   const failedItems = [];
   const generationMap = new Map();
+  const batchReferenceRegistry = createBatchReferenceRegistry();
   let completed = 0;
   let processed = 0;
   const nativeDownloadCache = new Map();
@@ -53,7 +56,7 @@ async function downloadAllAsFiles(items, options) {
       await downloadBlob(new Blob([processed.bytes], { type: processed.mimeType }), imageFilename);
 
       completed += 1;
-      appendToGroupState(groupState, imageBaseName, outputExt, metadata);
+      appendToGroupState(groupState, imageBaseName, outputExt, metadata, batchReferenceRegistry);
     } catch (error) {
       failures.push({ index, imageUrl: primaryUrl, error: String(error) });
       failedItems.push(item);
@@ -83,7 +86,7 @@ async function downloadAllAsFiles(items, options) {
       failed: failures.length,
       skipped: 0
     });
-    await writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache, options);
+    await writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache, options, batchReferenceRegistry);
   }
 
   return {
@@ -124,6 +127,7 @@ async function downloadAllAsZipBatched(items, options) {
     const batchSuffix = totalBatches > 1 ? `_batch${batchNum + 1}of${totalBatches}` : "";
     const zip = new SimpleZipWriter();
     const generationMap = new Map();
+    const batchReferenceRegistry = createBatchReferenceRegistry();
     let batchCompleted = 0;
     let batchFailed = 0;
     const failures = [];
@@ -212,7 +216,7 @@ async function downloadAllAsZipBatched(items, options) {
       if (result.ok) {
         zip.addFile(result.imagePath, result.bytes);
         batchCompleted += 1;
-        appendToGroupState(slots[i].groupState, result.imageBaseName, result.outputExt, result.metadata);
+        appendToGroupState(slots[i].groupState, result.imageBaseName, result.outputExt, result.metadata, batchReferenceRegistry);
       } else {
         failures.push({ index: result.globalIndex, imageUrl: result.primaryUrl, error: result.error });
         allFailedItems.push(result.item);
@@ -225,7 +229,7 @@ async function downloadAllAsZipBatched(items, options) {
 
     if (options.organizeByGeneration && !cancelToken.cancelled) {
       emitDownloadProgress({ phase: "finalizing", mode: "zip", processed: overallProcessed, requested: items.length, completed: overallCompleted, failed: overallFailed, skipped: 0, batchNumber: batchNum + 1, totalBatches });
-      await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options);
+      await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options, batchReferenceRegistry);
     }
 
     if (zip.entries.length === 0) {
@@ -265,6 +269,7 @@ async function downloadAllAsZip(items, options) {
   const failures = [];
   const failedItems = [];
   const generationMap = new Map();
+  const batchReferenceRegistry = createBatchReferenceRegistry();
   let completed = 0;
   let processed = 0;
   const nativeDownloadCache = new Map();
@@ -331,7 +336,7 @@ async function downloadAllAsZip(items, options) {
       failed: failures.length,
       skipped: 0
     });
-    await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options);
+    await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options, batchReferenceRegistry);
   }
 
   if (zip.entries.length === 0) {
@@ -406,6 +411,7 @@ async function downloadAllAsZipBatchedAdaptive(items, options) {
 
     const zip = new SimpleZipWriter();
     const generationMap = new Map();
+    const batchReferenceRegistry = createBatchReferenceRegistry();
     let batchCompleted = 0;
     let batchFailed = 0;
     const failedItems = [];
@@ -487,7 +493,7 @@ async function downloadAllAsZipBatchedAdaptive(items, options) {
       if (result.ok) {
         zip.addFile(result.imagePath, result.bytes);
         batchCompleted += 1;
-        appendToGroupState(slots[i].groupState, result.imageBaseName, result.outputExt, result.metadata);
+        appendToGroupState(slots[i].groupState, result.imageBaseName, result.outputExt, result.metadata, batchReferenceRegistry);
       } else {
         failedItems.push(result.item);
         batchFailed += 1;
@@ -507,7 +513,7 @@ async function downloadAllAsZipBatchedAdaptive(items, options) {
         totalBatches,
         message: depth > 0 ? `Building smaller ZIP chunk ${labelSuffix}...` : undefined
       });
-      await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options);
+      await writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options, batchReferenceRegistry);
     }
 
     if (zip.entries.length === 0) {
@@ -635,6 +641,139 @@ function buildMetadata(item, index, runId, selectedUrl, candidateUrls) {
     metadata.networkDebug = item.networkDebug;
   }
   return metadata;
+}
+
+function createBatchReferenceRegistry() {
+  return {
+    entriesByKey: new Map(),
+    orderedEntries: [],
+    nextFallbackOrdinal: 1
+  };
+}
+
+function registerMetadataReferencesInBatchRegistry(metadata, registry) {
+  if (!registry || !Array.isArray(metadata?.referenceImages)) {
+    return [];
+  }
+  const ids = [];
+  for (const ref of metadata.referenceImages) {
+    const entry = registerReferenceInBatchRegistry(ref, registry);
+    if (entry?.id) ids.push(entry.id);
+  }
+  return Array.from(new Set(ids));
+}
+
+function registerReferenceInBatchRegistry(ref, registry) {
+  if (!registry || !ref || typeof ref !== "object") {
+    return null;
+  }
+
+  const key = buildReferenceRegistryKey(ref);
+  if (!key) {
+    return null;
+  }
+  if (registry.entriesByKey.has(key)) {
+    return registry.entriesByKey.get(key);
+  }
+
+  const fallbackOrdinal = registry.nextFallbackOrdinal++;
+  const entry = {
+    id: buildReferenceLogicalId(ref, fallbackOrdinal),
+    type: inferReferenceType(ref),
+    mediaId: String(ref?.mediaId || ""),
+    genId: String(ref?.genId || ""),
+    sourceTaskId: String(ref?.sourceTaskId || ""),
+    mediaUrl: String(ref?.mediaUrl || ""),
+    thumbUrl: String(ref?.thumbUrl || ""),
+    alt: String(ref?.alt || ""),
+    file: "",
+    thumbFile: "",
+    status: "pending"
+  };
+
+  registry.entriesByKey.set(key, entry);
+  registry.orderedEntries.push(entry);
+  return entry;
+}
+
+function buildReferenceRegistryKey(ref) {
+  const mediaId = String(ref?.mediaId || "");
+  if (mediaId) return `media:${mediaId}`;
+
+  const genId = String(ref?.genId || "");
+  if (genId) return `gen:${genId}`;
+
+  const sourceTaskId = String(ref?.sourceTaskId || "");
+  if (sourceTaskId) return `task:${sourceTaskId}`;
+
+  const mediaPath = normalizeReferenceAssetPath(ref?.mediaUrl);
+  if (mediaPath) return `path:${mediaPath}`;
+
+  const thumbPath = normalizeReferenceAssetPath(ref?.thumbUrl);
+  if (thumbPath) return `path:${thumbPath}`;
+
+  const fallbackText = [
+    String(ref?.mediaUrl || ""),
+    String(ref?.thumbUrl || ""),
+    String(ref?.alt || "")
+  ].filter(Boolean).join("|");
+  if (!fallbackText) return "";
+  return `fallback:${hashStringForReferenceId(fallbackText)}`;
+}
+
+function buildReferenceLogicalId(ref, fallbackOrdinal) {
+  const mediaId = String(ref?.mediaId || "");
+  if (mediaId) return `ref_media_${mediaId}`;
+
+  const genId = String(ref?.genId || "");
+  if (genId) return `ref_gen_${genId}`;
+
+  const sourceTaskId = String(ref?.sourceTaskId || "");
+  if (sourceTaskId) return `ref_task_${sourceTaskId}`;
+
+  const normalizedPath = normalizeReferenceAssetPath(ref?.mediaUrl) || normalizeReferenceAssetPath(ref?.thumbUrl);
+  if (normalizedPath) {
+    return `ref_path_${hashStringForReferenceId(normalizedPath)}`;
+  }
+
+  return `ref_fallback_${String(fallbackOrdinal).padStart(6, "0")}`;
+}
+
+function inferReferenceType(ref) {
+  return String(ref?.genId || ref?.sourceTaskId || "") ? "generation" : "upload";
+}
+
+function normalizeReferenceAssetPath(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  try {
+    const url = new URL(text, "https://sora.chatgpt.com/");
+    return decodePathForReferenceKey(url.pathname || "");
+  } catch {
+    const stripped = text.split("#")[0].split("?")[0];
+    return decodePathForReferenceKey(stripped);
+  }
+}
+
+function decodePathForReferenceKey(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+function hashStringForReferenceId(input) {
+  let hash = 2166136261;
+  const text = String(input || "");
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 // ── Candidate URL building ──
@@ -1290,10 +1429,11 @@ function qualityScoreForPreferredSource(url) {
 
 // ── Group helpers ──
 
-function appendToGroupState(groupState, imageBaseName, ext, metadata) {
+function appendToGroupState(groupState, imageBaseName, ext, metadata, batchReferenceRegistry = null) {
+  const imageFile = `${imageBaseName}${ext}`;
   groupState.images.push({
     index: metadata.index,
-    file: `${imageBaseName}${ext}`,
+    file: imageFile,
     imageUrl: metadata.imageUrl,
     detailUrl: metadata.detailUrl,
     taskUrl: metadata.taskUrl
@@ -1338,14 +1478,148 @@ function appendToGroupState(groupState, imageBaseName, ext, metadata) {
       referenceDebug: metadata.referenceDebug
     });
   }
+  if (batchReferenceRegistry) {
+    const referenceIds = registerMetadataReferencesInBatchRegistry(metadata, batchReferenceRegistry);
+    groupState.imageReferenceIdsByFile.set(imageFile, referenceIds);
+  }
+}
+
+function buildGroupImagesMetadata(groupState) {
+  return (Array.isArray(groupState?.images) ? groupState.images : []).map((image) => ({
+    ...image,
+    referenceIds: Array.isArray(groupState?.imageReferenceIdsByFile?.get(image.file))
+      ? [...groupState.imageReferenceIdsByFile.get(image.file)]
+      : []
+  }));
+}
+
+function markRegistryReferenceMissing(registry, ref) {
+  if (!registry) return;
+  const key = buildReferenceRegistryKey(ref);
+  if (!key || !registry.entriesByKey.has(key)) return;
+  const entry = registry.entriesByKey.get(key);
+  entry.status = "missing";
+  if (!entry.file) entry.file = "";
+}
+
+function buildReferenceManifestPayload(registry) {
+  const refs = Array.isArray(registry?.orderedEntries)
+    ? registry.orderedEntries.map((entry) => {
+        const out = {
+          id: String(entry?.id || ""),
+          type: String(entry?.type || ""),
+          mediaId: String(entry?.mediaId || ""),
+          genId: String(entry?.genId || ""),
+          sourceTaskId: String(entry?.sourceTaskId || ""),
+          file: String(entry?.file || ""),
+          mediaUrl: String(entry?.mediaUrl || ""),
+          thumbUrl: String(entry?.thumbUrl || ""),
+          alt: String(entry?.alt || "")
+        };
+        if (entry?.thumbFile) out.thumbFile = String(entry.thumbFile);
+        if (entry?.status && entry.status !== "pending") out.status = String(entry.status);
+        return out;
+      })
+    : [];
+
+  return {
+    version: 1,
+    refs
+  };
+}
+
+function buildSharedReferenceFilename(cleanedPrefix, index, sourceUrl) {
+  const ext = guessExtension(sourceUrl) || ".bin";
+  return `${cleanedPrefix}/REFERENCES/ref_${String(index + 1).padStart(6, "0")}${ext}`;
+}
+
+async function exportSharedReferencesAsFiles(cleanedPrefix, registry, nativeDownloadCache) {
+  const refs = Array.isArray(registry?.orderedEntries) ? registry.orderedEntries : [];
+  for (let i = 0; i < refs.length; i += 1) {
+    const ref = refs[i];
+    const sourceUrls = await getReferenceSourceCandidates(ref, nativeDownloadCache);
+    if (!sourceUrls.length) {
+      ref.status = "missing";
+      ref.file = "";
+      continue;
+    }
+    let exported = false;
+    for (const sourceUrl of sourceUrls) {
+      const filename = buildSharedReferenceFilename(cleanedPrefix, i, sourceUrl);
+      try {
+        await downloadUrl(sourceUrl, filename);
+        ref.file = filename;
+        delete ref.status;
+        exported = true;
+        break;
+      } catch {
+        try {
+          const bytes = await fetchBinaryBytes(sourceUrl, 15000);
+          const ext = guessExtension(sourceUrl);
+          const mime = extensionToMime(ext) || "application/octet-stream";
+          await downloadBlob(new Blob([bytes], { type: mime }), filename);
+          ref.file = filename;
+          delete ref.status;
+          exported = true;
+          break;
+        } catch {
+          // Try next candidate
+        }
+      }
+    }
+    if (!exported) {
+      ref.status = "missing";
+      ref.file = "";
+    }
+  }
+}
+
+async function exportSharedReferencesToZip(zip, cleanedPrefix, registry, nativeDownloadCache) {
+  const refs = Array.isArray(registry?.orderedEntries) ? registry.orderedEntries : [];
+  for (let i = 0; i < refs.length; i += 1) {
+    const ref = refs[i];
+    const sourceUrls = await getReferenceSourceCandidates(ref, nativeDownloadCache);
+    if (!sourceUrls.length) {
+      ref.status = "missing";
+      ref.file = "";
+      continue;
+    }
+    let exported = false;
+    for (const sourceUrl of sourceUrls) {
+      try {
+        const bytes = await fetchBinaryBytes(sourceUrl, 15000);
+        const filename = buildSharedReferenceFilename(cleanedPrefix, i, sourceUrl);
+        zip.addFile(filename, bytes);
+        ref.file = filename;
+        delete ref.status;
+        exported = true;
+        break;
+      } catch {
+        // Try next candidate
+      }
+    }
+    if (!exported) {
+      ref.status = "missing";
+      ref.file = "";
+    }
+  }
 }
 
 // ── Generation summaries ──
 
-async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache, options) {
+async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, runId, nativeDownloadCache, options, batchReferenceRegistry = null) {
   const includePrompts = options?.includePrompts !== false;
   const includePresets = options?.includePresets !== false;
   const includeReferences = options?.includeReferences !== false;
+
+  if (includeReferences && batchReferenceRegistry) {
+    await exportSharedReferencesAsFiles(cleanedPrefix, batchReferenceRegistry, nativeDownloadCache);
+    await downloadTextFile(
+      JSON.stringify(buildReferenceManifestPayload(batchReferenceRegistry), null, 2),
+      `${cleanedPrefix}/references.json`,
+      "application/json"
+    );
+  }
 
   for (const groupState of generationMap.values()) {
     if (includePrompts && groupState.prompt) {
@@ -1375,7 +1649,7 @@ async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, run
       title: groupState.title,
       taskId: groupState.taskId,
       taskUrl: groupState.taskUrl,
-      images: groupState.images
+      images: buildGroupImagesMetadata(groupState)
     };
     if (includePrompts) generationMeta.prompt = groupState.prompt;
     if (includePresets) {
@@ -1396,10 +1670,18 @@ async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, run
   }
 }
 
-async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options) {
+async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, runId, nativeDownloadCache, options, batchReferenceRegistry = null) {
   const includePrompts = options?.includePrompts !== false;
   const includePresets = options?.includePresets !== false;
   const includeReferences = options?.includeReferences !== false;
+
+  if (includeReferences && batchReferenceRegistry) {
+    await exportSharedReferencesToZip(zip, cleanedPrefix, batchReferenceRegistry, nativeDownloadCache);
+    zip.addTextFile(
+      `${cleanedPrefix}/references.json`,
+      JSON.stringify(buildReferenceManifestPayload(batchReferenceRegistry), null, 2)
+    );
+  }
 
   for (const groupState of generationMap.values()) {
     if (includePrompts && groupState.prompt) {
@@ -1421,7 +1703,7 @@ async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, 
       title: groupState.title,
       taskId: groupState.taskId,
       taskUrl: groupState.taskUrl,
-      images: groupState.images
+      images: buildGroupImagesMetadata(groupState)
     };
     if (includePrompts) generationMeta.prompt = groupState.prompt;
     if (includePresets) {
@@ -1630,6 +1912,7 @@ function getOrCreateGroupState(map, group) {
     presetDescription: "",
     referencesByKey: new Map(),
     referenceDebug: [],
+    imageReferenceIdsByFile: new Map(),
     prompt: "",
     images: []
   };
@@ -1639,12 +1922,15 @@ function getOrCreateGroupState(map, group) {
 
 // ── Reference image export ──
 
-async function exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDownloadCache) {
+async function exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDownloadCache, batchReferenceRegistry = null) {
   const refs = Array.from(groupState.referencesByKey.values());
   for (let i = 0; i < refs.length; i += 1) {
     const ref = refs[i];
     const sourceUrls = await getReferenceSourceCandidates(ref, nativeDownloadCache);
-    if (!sourceUrls.length) continue;
+    if (!sourceUrls.length) {
+      markRegistryReferenceMissing(batchReferenceRegistry, ref);
+      continue;
+    }
     let exported = false;
     for (const sourceUrl of sourceUrls) {
       try {
@@ -1668,17 +1954,21 @@ async function exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDow
       }
     }
     if (!exported) {
+      markRegistryReferenceMissing(batchReferenceRegistry, ref);
       console.warn("[Sora Downloader] Failed to export reference image", ref);
     }
   }
 }
 
-async function exportReferenceImagesToZip(zip, cleanedPrefix, groupState, nativeDownloadCache) {
+async function exportReferenceImagesToZip(zip, cleanedPrefix, groupState, nativeDownloadCache, batchReferenceRegistry = null) {
   const refs = Array.from(groupState.referencesByKey.values());
   for (let i = 0; i < refs.length; i += 1) {
     const ref = refs[i];
     const sourceUrls = await getReferenceSourceCandidates(ref, nativeDownloadCache);
-    if (!sourceUrls.length) continue;
+    if (!sourceUrls.length) {
+      markRegistryReferenceMissing(batchReferenceRegistry, ref);
+      continue;
+    }
     let exported = false;
     for (const sourceUrl of sourceUrls) {
       try {
@@ -1693,12 +1983,18 @@ async function exportReferenceImagesToZip(zip, cleanedPrefix, groupState, native
       }
     }
     if (!exported) {
+      markRegistryReferenceMissing(batchReferenceRegistry, ref);
       console.warn("[Sora Downloader] Failed to export reference image to ZIP", ref);
     }
   }
 }
 
-async function getReferenceSourceCandidates(ref, nativeDownloadCache) {
+async function getReferenceSourceCandidates(ref, nativeDownloadCache, cache = sharedReferenceCandidateCache) {
+  const cacheKey = buildReferenceRegistryKey(ref);
+  if (cacheKey && cache.has(cacheKey)) {
+    return [...(cache.get(cacheKey) || [])];
+  }
+
   const candidates = [];
   const mediaUrl = String(ref?.mediaUrl || "");
   const thumbUrl = String(ref?.thumbUrl || "");
@@ -1714,7 +2010,11 @@ async function getReferenceSourceCandidates(ref, nativeDownloadCache) {
   const deThumbed = candidates
     .map((url) => String(url || "").replace(/_thumb(?=\.[a-z0-9]+(?:[?#]|$))/i, ""))
     .filter(Boolean);
-  return Array.from(new Set([...deThumbed, ...candidates].filter(Boolean)));
+  const resolved = Array.from(new Set([...deThumbed, ...candidates].filter(Boolean)));
+  if (cacheKey) {
+    cache.set(cacheKey, resolved);
+  }
+  return resolved;
 }
 
 // ── Text builders ──
