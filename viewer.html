@@ -1608,21 +1608,46 @@ function getImageEntryForItem(item) {
 function getResolvedReferencesForItem(item) {
   const imgEntry = getImageEntryForItem(item);
   const referenceIds = Array.isArray(imgEntry?.referenceIds) ? imgEntry.referenceIds.filter(Boolean) : [];
-  if (referenceIds.length && sharedReferenceManifest?.version === 1 && sharedReferenceManifest?.refsById) {
-    const refs = [];
-    for (const refId of referenceIds) {
-      const manifestRef = sharedReferenceManifest.refsById.get(refId);
-      if (!manifestRef) continue;
-      refs.push({
-        ...manifestRef,
-        localBlobUrl: sharedReferenceBlobUrls.get(refId) || ''
-      });
-    }
-    if (refs.length === referenceIds.length) {
-      return refs;
-    }
+  const legacyRefs = Array.isArray(item?.meta?.references) ? item.meta.references : [];
+  if (!referenceIds.length || !(sharedReferenceManifest?.version === 1 && sharedReferenceManifest?.refsById)) {
+    return legacyRefs;
   }
-  return Array.isArray(item?.meta?.references) ? item.meta.references : [];
+
+  const refs = [];
+  let manifestComplete = true;
+  for (const refId of referenceIds) {
+    const manifestRef = sharedReferenceManifest.refsById.get(refId);
+    if (!manifestRef) {
+      manifestComplete = false;
+      refs.push({
+        id: refId,
+        type: '',
+        mediaId: '',
+        genId: '',
+        sourceTaskId: '',
+        file: '',
+        thumbFile: '',
+        mediaUrl: '',
+        thumbUrl: '',
+        alt: `Missing reference ${refId}`,
+        status: 'missing',
+        localBlobUrl: ''
+      });
+      continue;
+    }
+    refs.push({
+      ...manifestRef,
+      localBlobUrl: sharedReferenceBlobUrls.get(refId) || ''
+    });
+  }
+
+  if (!manifestComplete && legacyRefs.length >= referenceIds.length) {
+    return legacyRefs;
+  }
+  if (!refs.length && legacyRefs.length) {
+    return legacyRefs;
+  }
+  return refs;
 }
 
 function normalizeManifestPath(path, rootName) {
