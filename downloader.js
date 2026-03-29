@@ -1633,9 +1633,8 @@ async function writeGenerationSummariesAsFiles(cleanedPrefix, generationMap, run
       );
     }
     if (includeReferences) {
-      await exportReferenceImagesAsFiles(cleanedPrefix, groupState, nativeDownloadCache);
       await downloadTextFile(
-        buildReferencesText(groupState),
+        buildReferencesText(groupState, batchReferenceRegistry),
         `${cleanedPrefix}/${groupState.folder}/references.txt`,
         "text/plain"
       );
@@ -1691,8 +1690,7 @@ async function writeGenerationSummariesToZip(zip, cleanedPrefix, generationMap, 
       zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/preset.txt`, buildPresetText(groupState));
     }
     if (includeReferences) {
-      await exportReferenceImagesToZip(zip, cleanedPrefix, groupState, nativeDownloadCache);
-      zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/references.txt`, buildReferencesText(groupState));
+      zip.addTextFile(`${cleanedPrefix}/${groupState.folder}/references.txt`, buildReferencesText(groupState, batchReferenceRegistry));
     }
 
     const generationMeta = {
@@ -2019,7 +2017,32 @@ async function getReferenceSourceCandidates(ref, nativeDownloadCache, cache = sh
 
 // ── Text builders ──
 
-function buildReferencesText(groupState) {
+function getReferenceRegistryEntry(ref, registry) {
+  const key = buildReferenceRegistryKey(ref);
+  if (!key || !registry?.entriesByKey?.has(key)) return null;
+  return registry.entriesByKey.get(key) || null;
+}
+
+function getReferenceFileLabel(ref, registry) {
+  const entry = getReferenceRegistryEntry(ref, registry);
+  const filePath = String(entry?.file || "");
+  if (filePath) {
+    const parts = filePath.split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] || filePath;
+  }
+  return ref.mediaId || ref.genId || ref.sourceTaskId || "(missing reference file)";
+}
+
+function getReferenceTypeLabel(ref, registry) {
+  const entry = getReferenceRegistryEntry(ref, registry);
+  const type = String(entry?.type || "");
+  if (type === "upload" || type === "generation") return type;
+  if (ref.mediaId) return "upload";
+  if (ref.genId) return "generation";
+  return "unknown";
+}
+
+function buildReferencesText(groupState, registry = null) {
   const refs = Array.from(groupState.referencesByKey.values());
   const lines = [];
   lines.push("References");
@@ -2030,12 +2053,15 @@ function buildReferencesText(groupState) {
   }
   for (let i = 0; i < refs.length; i += 1) {
     const r = refs[i];
-    lines.push(`${i + 1}. ${r.mediaId || r.genId || r.sourceTaskId || "(no media/gen id)"}`);
-    if (r.genId) lines.push(`   genId: ${r.genId}`);
-    if (r.sourceTaskId) lines.push(`   sourceTaskId: ${r.sourceTaskId}`);
-    if (r.mediaUrl) lines.push(`   mediaUrl: ${r.mediaUrl}`);
-    if (r.thumbUrl) lines.push(`   thumbUrl: ${r.thumbUrl}`);
-    if (r.alt) lines.push(`   alt: ${r.alt}`);
+    const fileLabel = getReferenceFileLabel(r, registry);
+    const typeLabel = getReferenceTypeLabel(r, registry);
+    lines.push(`${i + 1}. ${fileLabel}`);
+    lines.push(`   Type: ${typeLabel}`);
+    if (r.mediaId) lines.push(`   Media ID: ${r.mediaId}`);
+    if (r.genId) lines.push(`   Gen ID: ${r.genId}`);
+    if (r.sourceTaskId) lines.push(`   Source Task ID: ${r.sourceTaskId}`);
+    const entry = getReferenceRegistryEntry(r, registry);
+    if (entry?.status === "missing") lines.push("   Status: missing");
   }
   return `${lines.join("\n")}\n`;
 }

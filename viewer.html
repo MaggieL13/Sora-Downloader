@@ -733,6 +733,13 @@
     gap: 8px;
   }
 
+  .ref-card {
+    width: 112px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
   .ref-thumb {
     width: 64px;
     height: 64px;
@@ -765,6 +772,25 @@
     justify-content: center;
     font-size: 22px;
     color: var(--text-muted);
+  }
+
+  .ref-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .ref-name {
+    color: var(--text);
+    font-weight: 600;
+    word-break: break-word;
+  }
+
+  .ref-detail {
+    color: var(--text-muted);
+    word-break: break-word;
   }
 
   .modal-link {
@@ -1488,6 +1514,8 @@ async function renderModal() {
     grid.className = 'refs-grid';
 
     for (const [refIndex, ref] of refs.entries()) {
+      const card = document.createElement('div');
+      card.className = 'ref-card';
       const thumb = document.createElement('div');
       thumb.className = 'ref-thumb';
 
@@ -1521,7 +1549,23 @@ async function renderModal() {
         thumb.appendChild(img);
       }
 
-      grid.appendChild(thumb);
+      const meta = document.createElement('div');
+      meta.className = 'ref-meta';
+
+      const name = document.createElement('div');
+      name.className = 'ref-name';
+      name.textContent = getReferenceDisplayName(ref);
+      meta.appendChild(name);
+
+      const detail = document.createElement('div');
+      detail.className = 'ref-detail';
+      detail.textContent = getReferenceDescriptor(ref);
+      meta.appendChild(detail);
+
+      card.title = [name.textContent, detail.textContent].filter(Boolean).join('\n');
+      card.appendChild(thumb);
+      card.appendChild(meta);
+      grid.appendChild(card);
     }
 
     sec.appendChild(grid);
@@ -1648,6 +1692,29 @@ function getResolvedReferencesForItem(item) {
     return legacyRefs;
   }
   return refs;
+}
+
+function getReferenceDisplayName(ref) {
+  const filePath = String(ref?.file || ref?.thumbFile || '');
+  if (filePath) {
+    const parts = filePath.split(/[\\/]/).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
+  }
+  if (ref?.mediaId) return ref.mediaId;
+  if (ref?.genId) return ref.genId;
+  if (ref?.sourceTaskId) return ref.sourceTaskId;
+  return String(ref?.id || 'Missing reference');
+}
+
+function getReferenceDescriptor(ref) {
+  const type = String(ref?.type || '');
+  if (type === 'upload') return 'upload';
+  if (type === 'generation') return 'generation';
+  if (ref?.mediaId) return 'upload';
+  if (ref?.genId) return 'generation';
+  if (ref?.sourceTaskId) return 'task';
+  if (ref?.status === 'missing') return 'missing';
+  return 'reference';
 }
 
 function normalizeManifestPath(path, rootName) {
